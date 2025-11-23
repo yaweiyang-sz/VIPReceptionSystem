@@ -1,0 +1,55 @@
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://vip_user:vip_password@db:5432/vip_reception
+      - SECRET_KEY=your-secret-key-here-change-in-production
+      - CAMERA_SOURCES=0,http://localhost:8080/video
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - vip-network
+
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=vip_reception
+      - POSTGRES_USER=vip_user
+      - POSTGRES_PASSWORD=vip_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - vip-network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - vip-network
+
+
+volumes:
+  postgres_data:
+
+networks:
+  vip-network:
+    driver: bridge

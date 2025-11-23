@@ -1,0 +1,194 @@
+@startuml VIP_Reception_System_Component_Diagram
+
+skinparam componentStyle uml2
+skinparam nodesep 20
+skinparam ranksep 30
+
+package "VIP Reception System" {
+  
+  [Web Frontend] as Frontend
+  note right of Frontend
+    React/Vue.js Application
+    Real-time UI Components
+    WebSocket Client
+  end note
+  
+  [Backend API Server] as Backend
+  note right of Backend
+    FastAPI Application
+    RESTful API Endpoints
+    WebSocket Server
+  end note
+  
+  [Recognition Engine] as Recognition
+  note right of Recognition
+    Face Detection & Recognition
+    QR Code Scanning
+    Real-time Processing
+  end note
+  
+  [Database] as Database
+  note right of Database
+    PostgreSQL Database
+    Attendee & Visit Data
+    System Configuration
+  end note
+  
+  [File Storage] as FileStorage
+  note right of FileStorage
+    Face Images Storage
+    QR Code Images
+    System Files
+  end note
+  
+  [Camera Systems] as Cameras
+  note right of Cameras
+    RTSP/HTTP Camera Streams
+    Multiple Camera Support
+    Video Processing
+  end note
+  
+  [Admin Interface] as Admin
+  note right of Admin
+    System Configuration
+    Performance Monitoring
+    User Management
+  end note
+}
+
+' Component Interfaces
+interface "HTTP/REST API" as HTTP
+interface "WebSocket" as WS
+interface "Database Connection" as DB
+interface "File Operations" as FileOps
+interface "Video Stream" as Video
+interface "Admin API" as AdminAPI
+
+' Component Connections
+Frontend - HTTP
+Frontend - WS
+Backend - HTTP
+Backend - WS
+Backend - DB
+Backend - FileOps
+Backend - Video
+Backend - AdminAPI
+
+Recognition - DB
+Recognition - FileOps
+Recognition - Video
+
+Database - DB
+FileStorage - FileOps
+Cameras - Video
+Admin - AdminAPI
+
+' Internal Component Structure
+component "Frontend" {
+  [Attendee Manager] as AM
+  [Camera Manager] as CM
+  [Live Camera View] as LCV
+  [WebSocket Client] as WSC
+  [API Client] as APIC
+  
+  AM - APIC
+  CM - APIC
+  LCV - WSC
+  APIC - HTTP
+  WSC - WS
+}
+
+component "Backend" {
+  [API Routes] as API
+  [WebSocket Manager] as WSM
+  [Data Access Layer] as DAL
+  [Recognition Engine] as RE
+  
+  API - HTTP
+  API - DAL
+  API - RE
+  WSM - WS
+  WSM - RE
+  DAL - DB
+  RE - FileOps
+  RE - Video
+}
+
+component "Recognition Engine" {
+  [Face Recognition] as FR
+  [QR Code Engine] as QR
+  [Camera Stream Processor] as CSP
+  
+  FR - FileOps
+  QR - FileOps
+  CSP - Video
+  CSP - FR
+  CSP - QR
+}
+
+component "Database" {
+  [Attendees Table] as AT
+  [Visits Table] as VT
+  [Cameras Table] as CT
+  [System Logs] as SL
+  
+  AT -- VT
+  CT -- VT
+}
+
+' Deployment Notes
+node "Web Browser" {
+  Frontend
+}
+
+node "Application Server" {
+  Backend
+  Recognition
+}
+
+node "Storage Server" {
+  Database
+  FileStorage
+}
+
+node "Camera Network" {
+  Cameras
+}
+
+node "Admin Workstation" {
+  Admin
+}
+
+' Data Flow
+Frontend -> Backend : HTTP Requests (REST)
+Backend -> Frontend : HTTP Responses
+Frontend -> Backend : WebSocket Connection
+Backend -> Frontend : Real-time Updates
+Backend -> Database : SQL Queries
+Database -> Backend : Query Results
+Backend -> FileStorage : File Operations
+FileStorage -> Backend : File Access
+Cameras -> Recognition : Video Streams
+Recognition -> Cameras : Stream Control
+Admin -> Backend : Admin Operations
+Backend -> Admin : System Status
+
+note top of Frontend
+  Single Page Application
+  with real-time updates
+  and responsive design
+end note
+
+note top of Backend
+  High-performance
+  async server with
+  WebSocket support
+end note
+
+note top of Recognition
+  Computer vision
+  processing with
+  dual recognition
+end note
+
+@enduml

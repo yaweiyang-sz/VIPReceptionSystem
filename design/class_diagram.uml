@@ -1,0 +1,168 @@
+@startuml VIP_Reception_System_Class_Diagram
+
+skinparam classAttributeIconSize 0
+skinparam classFontSize 10
+skinparam classFontStyle normal
+
+class Attendee {
+  - id: int <<PK>>
+  - first_name: str
+  - last_name: str
+  - email: str <<unique>>
+  - company: str
+  - position: str
+  - phone: str
+  - is_vip: bool
+  - qr_code: str <<unique>>
+  - photo_url: str
+  - face_encoding: str
+  - status: str
+  - created_at: datetime
+  - updated_at: datetime
+  + __init__(first_name, last_name, email)
+  + get_full_name(): str
+  + update_status(new_status): void
+  + has_face_encoding(): bool
+}
+
+class Visit {
+  - id: int <<PK>>
+  - attendee_id: int <<FK>>
+  - check_in_time: datetime
+  - check_out_time: datetime
+  - recognition_method: str
+  - camera_id: int <<FK>>
+  - confidence_score: float
+  - created_at: datetime
+  + __init__(attendee_id, camera_id, method)
+  + check_in(): void
+  + check_out(): void
+  + get_duration(): timedelta
+  + is_active(): bool
+}
+
+class Camera {
+  - id: int <<PK>>
+  - name: str
+  - source: str
+  - location: str
+  - resolution: str
+  - fps: int
+  - is_active: bool
+  - created_at: datetime
+  - updated_at: datetime
+  + __init__(name, source, location)
+  + start_stream(): bool
+  + stop_stream(): bool
+  + get_status(): str
+  + update_config(config): void
+}
+
+class FaceRecognitionEngine {
+  - known_face_encodings: List
+  - known_face_ids: List
+  - known_face_metadata: Dict
+  - confidence_threshold: float
+  - face_cache_loaded: bool
+  + __init__()
+  + encode_face(image_data): Optional[Dict]
+  + recognize_face(image, db): Optional[Dict]
+  + load_known_faces(db): bool
+  + update_known_faces(attendee_id, encoding, metadata): void
+  + get_performance_stats(): Dict
+  + clear_cache(): void
+}
+
+class QRCodeEngine {
+  - supported_formats: List
+  + __init__()
+  + scan_qr_code(image): Optional[str]
+  + generate_qr_code(data): Optional[bytes]
+  + validate_qr_data(data): bool
+}
+
+class CameraStreamProcessor {
+  - active_streams: Dict
+  - processing_interval: float
+  - inference_interval: int
+  - face_engine: FaceRecognitionEngine
+  - qr_engine: QRCodeEngine
+  + __init__()
+  + start_stream_processing(camera_id, stream_url, db): bool
+  + stop_stream_processing(camera_id): void
+  - _process_stream(camera_id): void
+  - _annotate_frame(frame, face_result, qr_result): np.ndarray
+  - _send_recognition_update(camera_id, face_result, qr_result, frame): void
+  + get_active_streams(): List
+}
+
+class AttendeeCreateSchema {
+  - first_name: str
+  - last_name: str
+  - email: str
+  - company: str
+  - position: str
+  - phone: str
+  - is_vip: bool
+  + validate_email(): bool
+  + validate_phone(): bool
+}
+
+class CameraCreateSchema {
+  - name: str
+  - source: str
+  - location: str
+  - resolution: str
+  - fps: int
+  + validate_source(): bool
+  + validate_resolution(): bool
+}
+
+class RecognitionRequestSchema {
+  - image_data: str
+  - camera_id: int
+  + validate_image_data(): bool
+  + decode_image(): bytes
+}
+
+' Relationships
+Attendee "1" -- "0..*" Visit : has
+Camera "1" -- "0..*" Visit : records
+CameraStreamProcessor "1" -- "1..*" Camera : processes
+CameraStreamProcessor "1" -- "1" FaceRecognitionEngine : uses
+CameraStreamProcessor "1" -- "1" QRCodeEngine : uses
+
+FaceRecognitionEngine "1" -- "0..*" Attendee : recognizes
+QRCodeEngine "1" -- "0..*" Attendee : scans
+
+AttendeeCreateSchema ..> Attendee : creates
+CameraCreateSchema ..> Camera : creates
+RecognitionRequestSchema ..> CameraStreamProcessor : triggers
+
+note top of Attendee
+  Core entity representing
+  exhibition attendees
+  with face recognition
+  capabilities
+end note
+
+note right of Visit
+  Tracks attendee visits
+  with timestamps and
+  recognition method used
+end note
+
+note left of Camera
+  Manages camera
+  configurations and
+  stream processing
+end note
+
+note bottom of FaceRecognitionEngine
+  Handles face detection,
+  encoding, and matching
+  with performance
+  optimization
+end note
+
+@enduml

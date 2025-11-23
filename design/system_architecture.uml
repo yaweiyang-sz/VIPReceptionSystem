@@ -1,0 +1,137 @@
+@startuml VIP_Reception_System_Architecture
+
+!define RECTANGLE class
+skinparam classAttributeIconSize 0
+
+package "VIP Reception System" {
+  
+  package "Frontend Layer" {
+    class "React/Vue.js Frontend" as Frontend {
+      + AttendeeManager Component
+      + CameraManager Component
+      + LiveCameraView Component
+      + WebSocket Client
+      + API Client
+    }
+  }
+  
+  package "Backend Layer" {
+    class "FastAPI Backend" as Backend {
+      + API Routes Layer
+      + Recognition Engine Layer
+      + Data Access Layer
+      + WebSocket Manager
+    }
+    
+    package "Recognition Engine" {
+      class "FaceRecognitionEngine" as FaceEngine {
+        + encode_face(image_data)
+        + recognize_face(image)
+        + load_known_faces()
+        + update_known_faces()
+      }
+      
+      class "QRCodeEngine" as QREngine {
+        + scan_qr_code(image)
+        + generate_qr_code(data)
+      }
+      
+      class "CameraStreamProcessor" as StreamProcessor {
+        + start_stream_processing()
+        + stop_stream_processing()
+        + _process_stream()
+      }
+    }
+    
+    package "API Routes" {
+      class "AttendeeRoutes" as AttendeeAPI {
+        + CRUD operations
+        + Photo upload
+        + Visit history
+      }
+      
+      class "CameraRoutes" as CameraAPI {
+        + Camera configuration
+        + Stream management
+        + Status checking
+      }
+      
+      class "RecognitionRoutes" as RecognitionAPI {
+        + Face recognition
+        + QR scanning
+        + Real-time processing
+      }
+    }
+  }
+  
+  package "Data Layer" {
+    class "PostgreSQL Database" as Database {
+      + Attendees table
+      + Visits table
+      + Cameras table
+      + System logs
+    }
+    
+    class "File Storage" as FileStorage {
+      + Face images
+      + QR codes
+      + System files
+    }
+    
+    class "In-Memory Cache" as Cache {
+      + Face encodings
+      + Performance stats
+      + Session data
+    }
+  }
+  
+  package "External Systems" {
+    class "Camera Systems" as Cameras {
+      + RTSP streams
+      + HTTP streams
+      + Multiple cameras
+    }
+    
+    class "Admin Interface" as Admin {
+      + Configuration
+      + Monitoring
+      + Reporting
+    }
+  }
+}
+
+' Relationships
+Frontend --> Backend : HTTP/REST API
+Frontend --> Backend : WebSocket
+Backend --> Database : SQLAlchemy ORM
+Backend --> FileStorage : File operations
+Backend --> Cache : Memory operations
+
+FaceEngine --> Database : Load face encodings
+QREngine --> Database : Verify QR data
+StreamProcessor --> Cameras : Video streams
+
+AttendeeAPI --> FaceEngine : Face processing
+CameraAPI --> StreamProcessor : Stream control
+RecognitionAPI --> FaceEngine : Recognition requests
+RecognitionAPI --> QREngine : QR scanning
+
+Admin --> Frontend : Web interface
+Admin --> Backend : Admin API
+
+note right of Frontend
+  Real-time UI updates
+  via WebSocket
+end note
+
+note right of Backend
+  High-performance
+  async processing
+end note
+
+note right of Database
+  ACID compliance
+  Data persistence
+end note
+
+@enduml
