@@ -87,10 +87,9 @@ const AttendeeManager = ({ api }) => {
         }
       )
 
-      // After successful upload, use the backend URL with cache-busting
-      const backendUrl = 'http://localhost:8000'
+      // After successful upload, use relative URL with cache-busting
       const timestamp = new Date().getTime()
-      const backendPhotoUrl = `${backendUrl}/api/attendees/${attendeeId}/photo?t=${timestamp}`
+      const backendPhotoUrl = `/api/attendees/${attendeeId}/photo?t=${timestamp}`
       
       // Update form data with the backend URL and force image reload
       setFormData(prev => ({
@@ -158,8 +157,7 @@ const AttendeeManager = ({ api }) => {
   const handleEdit = (attendee) => {
     setEditingAttendee(attendee)
     
-    // Build the photo URL - ALWAYS use full backend URL for images
-    const backendUrl = 'http://localhost:8000' // Hardcoded for debugging
+    // Build the photo URL - use relative URL for images
     let photoUrl = ''
     if (attendee.photo_url) {
       // If photo_url is already a full URL, use it directly with cache-busting
@@ -167,20 +165,19 @@ const AttendeeManager = ({ api }) => {
         const timestamp = new Date().getTime()
         photoUrl = `${attendee.photo_url}?t=${timestamp}`
       } else {
-        // If it's a relative path, construct the full backend URL with cache-busting
+        // If it's a relative path, use it with cache-busting
         const timestamp = new Date().getTime()
-        photoUrl = `${backendUrl}${attendee.photo_url}?t=${timestamp}`
+        photoUrl = `${attendee.photo_url}?t=${timestamp}`
       }
     } else if (attendee.id) {
-      // Construct the photo URL from the API (full backend URL)
+      // Construct the photo URL from the API (relative URL)
       // Add cache-busting timestamp to force browser to reload the image
       const timestamp = new Date().getTime()
-      photoUrl = `${backendUrl}/api/attendees/${attendee.id}/photo?t=${timestamp}`
+      photoUrl = `/api/attendees/${attendee.id}/photo?t=${timestamp}`
     }
     
     console.log('Photo URL constructed:', photoUrl)
     console.log('Attendee data:', attendee)
-    console.log('Backend URL:', backendUrl)
     
     setFormData({
       first_name: attendee.first_name,

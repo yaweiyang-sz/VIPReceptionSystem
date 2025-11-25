@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react'
+import Hls from 'hls.js'
 
 const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
   const [detections, setDetections] = useState([])
   const [streamUrl, setStreamUrl] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [hls, setHls] = useState(null)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
 
@@ -27,37 +29,89 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
     fetchStreamUrl()
   }, [camera, api])
 
-  // Handle WebSocket connection for real-time detections
+  // Initialize HLS.js when stream URL is available
+  useEffect(() => {
+    if (!streamUrl || !videoRef.current) return
+
+    // Check if HLS.js is available
+    if (!Hls.isSupported()) {
+      console.error('HLS.js is not supported in this browser.')
+      return
+    }
+
+    const video = videoRef.current
+    const hlsInstance = new Hls({
+      enableWorker: false,
+      lowLatencyMode: true,
+      backBufferLength: 1,           // Reduce buffer for lower latency
+      maxBufferLength: 2,            // Smaller buffer
+      maxMaxBufferLength: 3,         // Maximum buffer size
+      maxBufferSize: 3 * 1000 * 1000, // 3MB buffer
+      maxBufferHole: 0.5,            // Reduce buffer hole tolerance
+      highBufferWatchdogPeriod: 1,   // Faster buffer monitoring
+      nudgeOffset: 0.1,              // Smaller nudge offset
+      nudgeMaxRetry: 2,              // Fewer retries
+      maxFragLookUpTolerance: 0.1,   // Reduce fragment lookup tolerance
+      liveSyncDurationCount: 1,      // Sync to live edge
+      liveMaxLatencyDurationCount: 2, // Maximum latency
+      liveDurationInfinity: false,   // Don't use infinite duration
+      liveBackBufferLength: 0,       // No back buffer for live
+      maxLiveSyncPlaybackRate: 1.1   // Allow slight speedup to catch up
+    })
+
+    hlsInstance.loadSource(streamUrl)
+    hlsInstance.attachMedia(video)
+
+    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+      console.log('HLS manifest parsed, starting video playback')
+      video.play().catch(err => {
+        console.error('Failed to play video:', err)
+      })
+    })
+
+    hlsInstance.on(Hls.Events.ERROR, (event, data) => {
+      console.error('HLS error:', data)
+      if (data.fatal) {
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            console.error('HLS network error, trying to recover...')
+            hlsInstance.startLoad()
+            break
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            console.error('HLS media error, recovering...')
+            hlsInstance.recoverMediaError()
+            break
+          default:
+            console.error('Fatal HLS error, cannot recover')
+            hlsInstance.destroy()
+            break
+        }
+      }
+    })
+
+    setHls(hlsInstance)
+
+    return () => {
+      if (hlsInstance) {
+        hlsInstance.destroy()
+      }
+    }
+  }, [streamUrl])
+
+  // Handle video stream and periodic detection updates
   useEffect(() => {
     if (!camera || !streamUrl) return
 
-    const ws = new WebSocket(`ws://localhost:8000/api/recognition/ws/stream/${camera.id}`)
-    
-    ws.onopen = () => {
-      console.log("WebSocket connected for real-time detections")
-    }
-    
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      
-      if (data.type === "recognition_update") {
-        setDetections(data.detections || [])
-        if (onDetectionUpdate) {
-          onDetectionUpdate(data.detections || [])
-        }
-      }
-    }
-    
-    ws.onclose = () => {
-      console.log("WebSocket disconnected")
-    }
-    
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error)
-    }
+    // For now, we'll use a placeholder for detections since real-time
+    // face recognition via WebSocket is not implemented
+    // In a production system, this would connect to a WebSocket or polling endpoint
+    const interval = setInterval(() => {
+      // Simulate detection updates (remove this in production)
+      setDetections([])
+    }, 5000)
 
     return () => {
-      ws.close()
+      clearInterval(interval)
     }
   }, [camera, streamUrl, onDetectionUpdate])
 
@@ -141,14 +195,12 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
       <div className="video-container">
         <video
           ref={videoRef}
-          controls
           autoPlay
           muted
           playsInline
           style={{ width: '100%', maxWidth: '640px', height: 'auto', borderRadius: '8px' }}
         >
-          <source src={streamUrl} type="video/mp4" />
-          Your browser does not support the video tag.
+          Your browser doesn't support HLS video playback.
         </video>
         <canvas
           ref={canvasRef}

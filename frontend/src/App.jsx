@@ -4,8 +4,8 @@ import AttendeeManager from './components/AttendeeManager'
 import CameraManager from './components/CameraManager'
 import LiveCameraView from './components/LiveCameraView'
 
-// API base URL - use environment variable or default to backend URL
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// API base URL - use environment variable or default to relative URL
+const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 // Configure axios base URL
 const api = axios.create({
@@ -83,55 +83,10 @@ function App() {
       setLoading(true)
       setError(null)
       
-      // Start recognition stream on backend
-      const response = await api.post(`/api/recognition/start-stream/${selectedCamera}`)
+      // Note: Real-time face recognition via WebSocket is not implemented
+      // This would require additional backend infrastructure for real-time processing
+      setError("Real-time face recognition is not available in this version. Use HLS video streaming instead.")
       
-      if (response.data.success) {
-        setRecognitionActive(true)
-        
-        // Connect to WebSocket for real-time updates
-        const ws = new WebSocket(`ws://localhost:8000/api/recognition/ws/stream/${selectedCamera}`)
-        
-        ws.onopen = () => {
-          console.log("WebSocket connected for real-time recognition")
-          setWebsocket(ws)
-        }
-        
-        ws.onmessage = (event) => {
-          const data = JSON.parse(event.data)
-          
-          if (data.type === "recognition_update") {
-            // Update annotated frame and detections
-            setAnnotatedFrame(data.annotated_frame)
-            setDetections(data.detections || [])
-            
-            // Update recognition result if attendee was recognized
-            const faceDetection = data.detections?.find(d => d.type === "face" && d.attendee_id)
-            if (faceDetection) {
-              // This would normally fetch the attendee details from the backend
-              // For now, we'll update the UI with the detection info
-              setRecognitionResult({
-                success: true,
-                method: "face",
-                confidence: faceDetection.confidence,
-                attendee: { id: faceDetection.attendee_id }
-              })
-            }
-          }
-        }
-        
-        ws.onclose = () => {
-          console.log("WebSocket disconnected")
-          setRecognitionActive(false)
-          setWebsocket(null)
-        }
-        
-        ws.onerror = (error) => {
-          console.error("WebSocket error:", error)
-          setError("Real-time recognition connection failed")
-          setRecognitionActive(false)
-        }
-      }
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to start real-time recognition')
     } finally {
