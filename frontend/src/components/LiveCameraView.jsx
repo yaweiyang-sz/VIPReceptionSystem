@@ -1,144 +1,249 @@
 import React, { useState, useEffect, useRef } from 'react'
-import Hls from 'hls.js'
 
 const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
   const [detections, setDetections] = useState([])
-  const [streamUrl, setStreamUrl] = useState(null)
+  const [streamInfo, setStreamInfo] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [hls, setHls] = useState(null)
+  const [connected, setConnected] = useState(false)
+  const [error, setError] = useState(null)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
+  const wsRef = useRef(null)
+  const frameQueueRef = useRef([])
+  const isProcessingRef = useRef(false)
 
-  // Fetch camera stream URL
+  // Fetch camera stream information
   useEffect(() => {
     if (!camera) return
 
-    const fetchStreamUrl = async () => {
+    const fetchStreamInfo = async () => {
       try {
         setLoading(true)
+        setError(null)
         const response = await api.get(`/api/cameras/${camera.id}/stream`)
-        setStreamUrl(response.data.stream_url)
+        setStreamInfo(response.data)
       } catch (err) {
-        console.error('Error fetching camera stream:', err)
-        setStreamUrl(null)
+        console.error('Error fetching camera stream info:', err)
+        setError('Failed to fetch camera stream information')
+        setStreamInfo(null)
       } finally {
         setLoading(false)
       }
     }
 
-    fetchStreamUrl()
+    fetchStreamInfo()
   }, [camera, api])
 
-  // Initialize HLS.js when stream URL is available
+  // WebSocket connection for camera stream
   useEffect(() => {
-    if (!streamUrl || !videoRef.current) return
+    if (!streamInfo || !streamInfo.websocket_url) return
 
-    // Check if HLS.js is available
-    if (!Hls.isSupported()) {
-      console.error('HLS.js is not supported in this browser.')
+    const connectWebSocket = () => {
+      // Determine backend URL based on current host
+      // In development, backend runs on port 8000, frontend on 3000
+      // When accessed from LAN, use the same hostname with port 8000
+      let backendHost
+      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        // Local development
+        backendHost = `${window.location.hostname}:8000`
+      } else {
+        // LAN access or production - backend is on same host but port 8000
+        backendHost = `${window.location.hostname}:8000`
+      }
+      
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsUrl = `${protocol}//${backendHost}${streamInfo.websocket_url}`
+      
+      console.log(`Connecting to WebSocket: ${wsUrl}`)
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        console.log('WebSocket connected to camera stream')
+        setConnected(true)
+        setError(null)
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data)
+          console.log('WebSocket message received:', message.type)
+          
+          switch (message.type) {
+            case 'connected':
+              console.log('Camera stream connected:', message.message)
+              break
+              
+            case 'stream_info':
+              console.log('Stream info:', message)
+              break
+              
+            case 'frame':
+              // Add frame to queue for processing
+              frameQueueRef.current.push(message)
+              processFrameQueue()
+              break
+              
+            case 'error':
+              console.error('Camera stream error:', message.message)
+              setError(message.message)
+              break
+              
+            case 'pong':
+              // Keep-alive response
+              break
+              
+            default:
+              console.log('Unknown message type:', message.type)
+          }
+        } catch (err) {
+          console.error('Error parsing WebSocket message:', err, 'Raw data:', event.data)
+        }
+      }
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error event:', error)
+        setError('WebSocket connection error - check console for details')
+        setConnected(false)
+      }
+
+      ws.onclose = (event) => {
+        console.log('WebSocket disconnected:', event.code, event.reason)
+        setConnected(false)
+        
+        // Try to reconnect after 3 seconds
+        setTimeout(() => {
+          if (streamInfo) {
+            console.log('Attempting to reconnect...')
+            connectWebSocket()
+          }
+        }, 3000)
+      }
+
+      // Send periodic ping to keep connection alive
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }))
+        }
+      }, 30000)
+
+      return () => {
+        clearInterval(pingInterval)
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close()
+        }
+      }
+    }
+
+    const cleanup = connectWebSocket()
+
+    return () => {
+      if (cleanup) cleanup()
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close()
+      }
+      wsRef.current = null
+      frameQueueRef.current = []
+      isProcessingRef.current = false
+    }
+  }, [streamInfo])
+
+  // Process frame queue to display video
+  const processFrameQueue = () => {
+    if (isProcessingRef.current || frameQueueRef.current.length === 0) {
       return
     }
 
-    const video = videoRef.current
-    const hlsInstance = new Hls({
-      enableWorker: false,
-      lowLatencyMode: true,
-      backBufferLength: 1,           // Reduce buffer for lower latency
-      maxBufferLength: 2,            // Smaller buffer
-      maxMaxBufferLength: 3,         // Maximum buffer size
-      maxBufferSize: 3 * 1000 * 1000, // 3MB buffer
-      maxBufferHole: 0.5,            // Reduce buffer hole tolerance
-      highBufferWatchdogPeriod: 1,   // Faster buffer monitoring
-      nudgeOffset: 0.1,              // Smaller nudge offset
-      nudgeMaxRetry: 2,              // Fewer retries
-      maxFragLookUpTolerance: 0.1,   // Reduce fragment lookup tolerance
-      liveSyncDurationCount: 1,      // Sync to live edge
-      liveMaxLatencyDurationCount: 2, // Maximum latency
-      liveDurationInfinity: false,   // Don't use infinite duration
-      liveBackBufferLength: 0,       // No back buffer for live
-      maxLiveSyncPlaybackRate: 1.1   // Allow slight speedup to catch up
-    })
-
-    hlsInstance.loadSource(streamUrl)
-    hlsInstance.attachMedia(video)
-
-    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-      console.log('HLS manifest parsed, starting video playback')
-      video.play().catch(err => {
-        console.error('Failed to play video:', err)
-      })
-    })
-
-    hlsInstance.on(Hls.Events.ERROR, (event, data) => {
-      console.error('HLS error:', data)
-      if (data.fatal) {
-        switch (data.type) {
-          case Hls.ErrorTypes.NETWORK_ERROR:
-            console.error('HLS network error, trying to recover...')
-            hlsInstance.startLoad()
-            break
-          case Hls.ErrorTypes.MEDIA_ERROR:
-            console.error('HLS media error, recovering...')
-            hlsInstance.recoverMediaError()
-            break
-          default:
-            console.error('Fatal HLS error, cannot recover')
-            hlsInstance.destroy()
-            break
+    isProcessingRef.current = true
+    
+    // Process all available frames in the queue
+    const processFrames = () => {
+      while (frameQueueRef.current.length > 0) {
+        const frame = frameQueueRef.current.shift()
+        
+        // Create image from base64 data
+        const img = new Image()
+        img.onload = () => {
+          // Update video element if it exists
+          if (videoRef.current) {
+            const video = videoRef.current
+            const ctx = video.getContext('2d')
+            ctx.clearRect(0, 0, video.width, video.height)
+            ctx.drawImage(img, 0, 0, video.width, video.height)
+          }
         }
+        
+        img.src = `data:image/jpeg;base64,${frame.data}`
       }
-    })
-
-    setHls(hlsInstance)
-
-    return () => {
-      if (hlsInstance) {
-        hlsInstance.destroy()
-      }
+      
+      isProcessingRef.current = false
+      
+      // Schedule next processing batch
+      setTimeout(() => {
+        if (frameQueueRef.current.length > 0) {
+          processFrameQueue()
+        }
+      }, 33) // ~30 fps
     }
-  }, [streamUrl])
 
-  // Handle video stream and periodic detection updates
+    // Use requestAnimationFrame for smoother rendering
+    requestAnimationFrame(processFrames)
+  }
+
+  // Initialize canvas for video display
   useEffect(() => {
-    if (!camera || !streamUrl) return
+    if (!videoRef.current) return
 
-    // For now, we'll use a placeholder for detections since real-time
-    // face recognition via WebSocket is not implemented
-    // In a production system, this would connect to a WebSocket or polling endpoint
+    const canvas = videoRef.current
+    canvas.width = 640
+    canvas.height = 480
+    const ctx = canvas.getContext('2d')
+    
+    // Draw initial black screen
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.fillStyle = '#fff'
+    ctx.font = '16px Arial'
+    ctx.textAlign = 'center'
+    ctx.fillText('Waiting for camera stream...', canvas.width / 2, canvas.height / 2)
+  }, [])
+
+  // Handle detection updates (placeholder for now)
+  useEffect(() => {
+    if (!camera || !connected) return
+
+    // For now, we'll use a placeholder for detections
+    // In a production system, this would connect to recognition WebSocket
     const interval = setInterval(() => {
-      // Simulate detection updates (remove this in production)
       setDetections([])
     }, 5000)
 
     return () => {
       clearInterval(interval)
     }
-  }, [camera, streamUrl, onDetectionUpdate])
+  }, [camera, connected, onDetectionUpdate])
 
   // Draw detection rectangles on canvas overlay
   useEffect(() => {
-    const video = videoRef.current
-    const canvas = canvasRef.current
-    if (!video || !canvas || !detections.length) return
+    const videoCanvas = videoRef.current
+    const overlayCanvas = canvasRef.current
+    if (!videoCanvas || !overlayCanvas || !detections.length) return
 
     const drawDetections = () => {
-      const ctx = canvas.getContext('2d')
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      const ctx = overlayCanvas.getContext('2d')
+      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height)
       
-      // Scale detection coordinates from frame size to video display size
-      const videoWidth = video.videoWidth
-      const videoHeight = video.videoHeight
-      const displayWidth = video.offsetWidth
-      const displayHeight = video.offsetHeight
-      
-      const scaleX = displayWidth / videoWidth
-      const scaleY = displayHeight / videoHeight
+      // Scale detection coordinates from frame size to display size
+      const displayWidth = videoCanvas.width
+      const displayHeight = videoCanvas.height
 
       detections.forEach(detection => {
         if (detection.type === 'face' && detection.location) {
           const [top, right, bottom, left] = detection.location
           
-          // Scale coordinates to match video display size
+          // Scale coordinates to match display size (assuming original frame is 320x240)
+          const scaleX = displayWidth / 320
+          const scaleY = displayHeight / 240
           const scaledLeft = left * scaleX
           const scaledTop = top * scaleY
           const scaledWidth = (right - left) * scaleX
@@ -156,8 +261,7 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
         }
         
         if (detection.type === 'qr_code') {
-          // For QR codes, we don't have location data from pyzbar
-          // So we'll just show a text indicator
+          // For QR codes, show a text indicator
           ctx.fillStyle = '#ff0000'
           ctx.font = '14px Arial'
           ctx.fillText(`QR Code: ${detection.data}`, 10, 20)
@@ -165,12 +269,18 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
       })
     }
 
-    // Redraw when video dimensions change or detections update
-    const observer = new ResizeObserver(drawDetections)
-    observer.observe(video)
-
+    // Set canvas dimensions to match video canvas
+    overlayCanvas.width = videoCanvas.width
+    overlayCanvas.height = videoCanvas.height
+    
     // Initial draw
     drawDetections()
+
+    // Redraw when detections update
+    const observer = new ResizeObserver(() => {
+      drawDetections()
+    })
+    observer.observe(videoCanvas)
 
     return () => {
       observer.disconnect()
@@ -181,7 +291,16 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
     return <div className="loading">Loading camera stream...</div>
   }
 
-  if (!streamUrl) {
+  if (error) {
+    return (
+      <div className="error">
+        <p>Error: {error}</p>
+        <p>Camera: {camera?.name || 'Unknown'}</p>
+      </div>
+    )
+  }
+
+  if (!streamInfo) {
     return (
       <div className="no-stream">
         <p>No camera stream available</p>
@@ -192,16 +311,17 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
 
   return (
     <div className="camera-view-container">
-      <div className="video-container">
-        <video
+      <div className="video-container" style={{ position: 'relative' }}>
+        <canvas
           ref={videoRef}
-          autoPlay
-          muted
-          playsInline
-          style={{ width: '100%', maxWidth: '640px', height: 'auto', borderRadius: '8px' }}
-        >
-          Your browser doesn't support HLS video playback.
-        </video>
+          style={{ 
+            width: '100%', 
+            maxWidth: '640px', 
+            height: 'auto', 
+            borderRadius: '8px',
+            backgroundColor: '#000'
+          }}
+        />
         <canvas
           ref={canvasRef}
           className="detection-overlay"
@@ -214,10 +334,30 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
             pointerEvents: 'none'
           }}
         />
+        <div className="connection-status" style={{
+          position: 'absolute',
+          top: '10px',
+          right: '10px',
+          padding: '5px 10px',
+          borderRadius: '4px',
+          backgroundColor: connected ? 'rgba(0, 255, 0, 0.7)' : 'rgba(255, 0, 0, 0.7)',
+          color: 'white',
+          fontSize: '12px',
+          fontWeight: 'bold'
+        }}>
+          {connected ? 'LIVE' : 'CONNECTING...'}
+        </div>
+      </div>
+      
+      {/* Camera Information */}
+      <div className="camera-info" style={{ marginTop: '10px' }}>
+        <h5>{camera?.name || 'Camera'}</h5>
+        <p>Status: {connected ? 'Connected' : 'Disconnected'}</p>
+        <p>Stream: WebSocket ({frameQueueRef.current.length} frames in queue)</p>
       </div>
       
       {/* Detection Information */}
-      <div className="detection-info">
+      <div className="detection-info" style={{ marginTop: '10px' }}>
         <h5>Active Detections:</h5>
         {detections.length > 0 ? (
           <ul>

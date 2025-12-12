@@ -187,20 +187,23 @@ This directory contains comprehensive design specifications for the VIP Receptio
 
 ### ✅ Completed Features
 - [x] Backend API with FastAPI
-- [x] Face recognition engine
-- [x] QR code scanning
+- [x] Face recognition engine (dummy implementation for future integration)
+- [x] QR code scanning (dummy implementation for future integration)
 - [x] Database models and migrations
-- [x] WebSocket real-time communication
-- [x] Frontend React components
-- [x] Docker containerization
+- [x] WebSocket real-time video streaming (low-latency JPEG frames)
+- [x] Frontend React components with WebSocket client
+- [x] Docker containerization with multi-service architecture
 - [x] Comprehensive test suite
+- [x] LAN accessibility for cross-device access
+- [x] Smooth video rendering with requestAnimationFrame
 
 ### 🔄 In Progress
 - [ ] Frontend UI polish
-- [ ] Performance optimization
+- [ ] Performance optimization for multiple concurrent streams
 - [ ] Advanced admin features
 
 ### 📋 Planned Enhancements
+- [ ] Integration with external face recognition service
 - [ ] Mobile app integration
 - [ ] Advanced analytics dashboard
 - [ ] Multi-language support

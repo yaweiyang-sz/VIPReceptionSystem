@@ -51,55 +51,68 @@ sequenceDiagram
     Frontend->>Frontend: Show face encoding status
 ```
 
-### Use Case 2: Real-time Face Recognition at Entry Point
+### Use Case 2: Real-time Camera Streaming with WebSocket
 
-**Description**: Recognize attendee via face recognition when they approach the exhibition entry.
+**Description**: Stream live camera video via WebSocket for real-time display with dummy recognition placeholder.
 
-**Actors**: Attendee, Camera System, System
+**Actors**: Frontend User, Camera System, System
 
 **Preconditions**:
-- Camera is active and streaming
-- Attendee has registered face encoding
-- System is running real-time recognition
+- Camera is configured in database
+- Backend WebSocket server is running
+- Frontend can connect to backend WebSocket
 
 **Postconditions**:
-- Attendee is recognized and checked in
-- Visit record is created
-- Real-time notification is sent
+- WebSocket connection established
+- Live video frames streamed to frontend
+- Dummy recognition results simulated for demonstration
 
 ```mermaid
 sequenceDiagram
-    participant Attendee as Attendee
-    participant Camera as Camera Stream
-    participant Processor as CameraStreamProcessor
-    participant FaceEngine as FaceRecognitionEngine
+    participant User as Frontend User
+    participant Frontend as Frontend UI
+    participant Backend as Backend API
+    participant WS as WebSocket Endpoint
+    participant CameraProc as Camera Stream Processor
     participant DB as Database
-    participant WS as WebSocket Manager
-    participant Frontend as Frontend Display
+    participant DummyEngine as Dummy Recognition Engine
 
-    Attendee->>Camera: Approach camera view
-    Camera->>Processor: Stream video frames
-    Processor->>Processor: Sample frame for inference
-    Processor->>FaceEngine: recognize_face(frame)
-    FaceEngine->>FaceEngine: Detect face locations
-    FaceEngine->>FaceEngine: Extract face encoding
-    FaceEngine->>FaceEngine: Compare with known faces
-    FaceEngine-->>Processor: Recognition result (attendee_id, confidence)
+    User->>Frontend: Select camera to view
+    Frontend->>Backend: GET /api/cameras/{id}/stream
+    Backend->>DB: Query camera configuration
+    DB-->>Backend: Camera source and details
+    Backend-->>Frontend: Stream info with WebSocket URL
     
-    alt Face recognized with high confidence
-        Processor->>DB: Create visit record
-        DB-->>Processor: Visit created
-        Processor->>WS: Broadcast recognition update
-        WS->>Frontend: Real-time recognition alert
-        Frontend->>Frontend: Display attendee info
-        Frontend->>Frontend: Highlight recognized face
-    else Face not recognized
-        Processor->>WS: Broadcast unknown face
-        WS->>Frontend: Show unknown face alert
+    Frontend->>WS: Connect to WebSocket (ws://host:8000/api/cameras/{id}/ws/stream)
+    WS->>CameraProc: Initialize camera stream
+    CameraProc->>CameraProc: Open camera source (test://color_bars)
+    CameraProc-->>WS: Stream ready
+    WS-->>Frontend: WebSocket connected
+    
+    Note over WS,Frontend: Real-time video streaming via WebSocket
+    loop Every frame (15fps)
+        CameraProc->>CameraProc: Generate/capture frame
+        CameraProc->>CameraProc: Encode frame as JPEG
+        CameraProc->>WS: Send frame as base64 JSON
+        WS->>Frontend: {"type": "frame", "data": "base64...", "frame_id": N}
+        Frontend->>Frontend: Decode and render frame on canvas
     end
     
-    Processor->>Processor: Annotate frame with detection
-    Processor-->>Camera: Continue processing
+    Note over CameraProc,DummyEngine: Dummy recognition for demonstration
+    CameraProc->>DummyEngine: simulate_recognition(frame)
+    DummyEngine->>DummyEngine: Generate simulated detection
+    DummyEngine-->>CameraProc: Simulated recognition result
+    
+    alt Simulated face detected
+        CameraProc->>WS: Send dummy recognition update
+        WS->>Frontend: {"type": "detection", "method": "face", "confidence": 0.85}
+        Frontend->>Frontend: Display simulated detection overlay
+    end
+    
+    User->>Frontend: Close camera view
+    Frontend->>WS: Close WebSocket connection
+    WS->>CameraProc: Stop camera stream
+    CameraProc->>CameraProc: Release camera resources
 ```
 
 ### Use Case 3: QR Code Check-in Process
@@ -209,27 +222,26 @@ sequenceDiagram
     Processor->>Processor: Annotate frame with results
 ```
 
-### Use Case 5: Camera Stream Management
+### Use Case 5: Camera Stream Management with WebSocket
 
-**Description**: Admin configures and manages camera streams for the recognition system.
+**Description**: Admin configures and manages camera streams with WebSocket-based video streaming.
 
 **Actors**: Admin User, System
 
 **Preconditions**:
 - Admin is logged into the system
-- Camera hardware is available
+- Camera is configured with source (test://, RTSP, HTTP, or webcam)
 
 **Postconditions**:
-- Camera configuration is saved
-- Stream processing is started/stopped
-- System status is updated
+- Camera configuration is saved to database
+- WebSocket streaming endpoint is available
+- Frontend can connect to stream camera video
 
 ```mermaid
 sequenceDiagram
     participant Admin as Admin User
     participant Frontend as Frontend UI
     participant Backend as Backend API
-    participant Processor as CameraStreamProcessor
     participant DB as Database
     participant WS as WebSocket Manager
 
@@ -239,26 +251,40 @@ sequenceDiagram
     DB-->>Backend: Camera list
     Backend-->>Frontend: Camera configurations
     
-    Admin->>Frontend: Add new camera
-    Frontend->>Backend: POST /api/cameras/
-    Backend->>DB: Create camera record
-    DB-->>Backend: Camera created
-    Backend->>Processor: start_stream_processing(camera_id, stream_url)
-    Processor->>Processor: Initialize camera stream
-    Processor-->>Backend: Stream started
-    Backend-->>Frontend: Camera added successfully
+    Admin->>Frontend: Add/Edit camera
+    Frontend->>Backend: POST/PUT /api/cameras/
+    Backend->>DB: Save camera configuration
+    DB-->>Backend: Camera saved
+    Backend-->>Frontend: Camera saved successfully
     
-    Processor->>WS: Broadcast camera status update
-    WS->>Frontend: Real-time status update
-    Frontend->>Frontend: Update camera status display
+    Note over Backend,WS: WebSocket endpoint automatically available at /api/cameras/{id}/ws/stream
     
-    Admin->>Frontend: Stop camera stream
-    Frontend->>Backend: POST /api/cameras/{id}/stop
-    Backend->>Processor: stop_stream_processing(camera_id)
-    Processor->>Processor: Release camera resources
-    Processor-->>Backend: Stream stopped
-    Backend->>DB: Update camera status
-    Backend-->>Frontend: Camera stopped
+    Admin->>Frontend: Test camera stream
+    Frontend->>Backend: GET /api/cameras/{id}/stream
+    Backend->>DB: Get camera details
+    DB-->>Backend: Camera source and WebSocket URL
+    Backend-->>Frontend: {"websocket_url": "/api/cameras/{id}/ws/stream", ...}
+    
+    Frontend->>WS: Connect to WebSocket stream
+    WS->>WS: Initialize camera processor
+    WS-->>Frontend: WebSocket connected
+    WS->>Frontend: Send test frames (color bars or camera feed)
+    Frontend->>Frontend: Display live video stream
+    
+    Admin->>Frontend: Update camera source
+    Frontend->>Backend: PUT /api/cameras/{id}
+    Backend->>DB: Update camera source
+    DB-->>Backend: Camera updated
+    Backend-->>Frontend: Camera updated
+    
+    Note over Frontend,WS: Existing WebSocket connections automatically use new source
+    
+    Admin->>Frontend: Delete camera (soft delete)
+    Frontend->>Backend: DELETE /api/cameras/{id}
+    Backend->>DB: Mark camera as inactive
+    DB-->>Backend: Camera deactivated
+    Backend-->>Frontend: Camera deleted
+    Backend->>WS: Close active WebSocket connections for camera
 ```
 
 ### Use Case 6: System Performance Monitoring
@@ -315,9 +341,27 @@ sequenceDiagram
 
 ## Key System Interactions Summary
 
-1. **Registration Flow**: Admin → Frontend → Backend → Database → Face Engine
-2. **Recognition Flow**: Camera → Processor → Recognition Engine → Database → WebSocket → Frontend
-3. **Management Flow**: Admin → Frontend → Backend → Processor → Database
+1. **Registration Flow**: Admin → Frontend → Backend → Database → Face Engine (Dummy)
+2. **Video Streaming Flow**: Frontend → Backend → WebSocket → Camera Processor → Frame Generation → Frontend Display
+3. **Camera Management Flow**: Admin → Frontend → Backend → Database → WebSocket Configuration
 4. **Monitoring Flow**: Admin → Frontend → Backend → System Components → Real-time Updates
 
-These sequence diagrams illustrate the core business processes and system interactions that make the VIP Reception System functional and efficient for aviation exhibition management.
+### Updated Architecture Highlights:
+
+#### **WebSocket Video Streaming**:
+- **Connection**: Frontend connects to `ws://host:8000/api/cameras/{id}/ws/stream`
+- **Frame Transmission**: JPEG frames as base64 in JSON messages
+- **Real-time Display**: Canvas-based rendering with smooth 30fps processing
+- **LAN Access**: Dynamic host resolution for cross-device accessibility
+
+#### **Dummy Recognition Implementation**:
+- **Face Recognition**: Simulated results for demonstration
+- **QR Code Scanning**: Placeholder for future integration
+- **Interface Preservation**: Maintains API for easy external service integration
+
+#### **Camera Source Support**:
+- **Test Patterns**: `test://color_bars`, `test://default` for development
+- **Real Cameras**: Webcam (source=0), RTSP, HTTP streams
+- **Fallback**: Automatic switch to test mode on stream failure
+
+These sequence diagrams illustrate the core business processes and system interactions that make the VIP Reception System functional and efficient for aviation exhibition management with WebSocket-based video streaming and ready-for-integration recognition architecture.

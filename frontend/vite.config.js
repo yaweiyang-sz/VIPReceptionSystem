@@ -9,13 +9,12 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : 'http://backend:8000',
+        // In Docker, backend service is available at backend:8000
+        // For local development without Docker, use localhost:8000
+        target: process.env.VITE_API_TARGET || 'http://backend:8000',
         changeOrigin: true,
         rewrite: (path) => path,
-      },
-      '/ws': {
-        target: process.env.NODE_ENV === 'development' ? 'ws://localhost:8000' : 'ws://backend:8000',
-        ws: true,
+        ws: true,  // Enable WebSocket proxy for all API endpoints including camera streams
       }
     }
   },

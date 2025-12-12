@@ -7,14 +7,18 @@ services:
       - DATABASE_URL=postgresql://vip_user:vip_password@db:5432/vip_reception
       - SECRET_KEY=your-secret-key-here-change-in-production
       - CAMERA_SOURCES=0,http://localhost:8080/video
+      - PYTHONUNBUFFERED=1  # For better Python logging in Docker
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./backend:/app  # Mount backend source code
     depends_on:
       - db
     restart: unless-stopped
     networks:
       - vip-network
+    # Development mode: don't use cache for Python packages
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   db:
     image: postgres:15
@@ -32,16 +36,30 @@ services:
       - vip-network
 
   frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
+    image: node:18-alpine
     ports:
-      - "3000:80"
+      - "3000:3000"
+    working_dir: /app
+    environment:
+      - NODE_ENV=development
+      # Use empty string for API URL to make relative requests
+      # Vite will proxy /api requests to backend:8000
+      - VITE_API_URL=
+      - VITE_API_TARGET=http://backend:8000
+      - VITE_WS_URL=ws://backend:8000
+    volumes:
+      - ./frontend:/app  # Mount frontend source code
+      - /app/node_modules  # Don't mount node_modules (use container's)
     depends_on:
       - backend
     restart: unless-stopped
     networks:
       - vip-network
+    # For development, run Vite dev server
+    command: >
+      sh -c "
+      npm install &&
+      npm run dev -- --host 0.0.0.0 --port 3000"
 
 
 volumes:

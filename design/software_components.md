@@ -90,16 +90,18 @@ The VIP Reception System is a web-based visitor recognition system designed for 
 ┌─────────────────────────────────────────────────────────────┐
 │                 Recognition Engine                          │
 ├─────────────────────────────────────────────────────────────┤
-│  • FaceRecognitionEngine                                    │
-│    - Face detection & encoding                              │
-│    - Face matching & recognition                            │
-│    - Performance optimization                               │
-│  • QRCodeEngine                                             │
-│    - QR code scanning                                       │
-│    - QR code generation                                     │
+│  • FaceRecognitionEngine (Dummy Implementation)             │
+│    - Placeholder for future face recognition service        │
+│    - Returns simulated recognition results                  │
+│    - Maintains interface for easy integration               │
+│  • QRCodeEngine (Dummy Implementation)                      │
+│    - Placeholder for QR code scanning service               │
+│    - Returns simulated QR code results                      │
+│    - Maintains interface for easy integration               │
 │  • CameraStreamProcessor                                    │
-│    - Real-time stream processing                            │
-│    - Frame analysis & annotation                            │
+│    - Real-time WebSocket stream processing                  │
+│    - Frame capture and JPEG encoding                        │
+│    - WebSocket broadcasting for low-latency video           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -198,9 +200,11 @@ class Camera(Base):
 ## Integration Points
 
 ### WebSocket Communication
-- **Protocol**: WebSocket for real-time updates
-- **Messages**: Recognition updates, camera status, system alerts
+- **Protocol**: WebSocket for real-time video streaming and updates
+- **Video Streaming**: Low-latency JPEG frame transmission via WebSocket
+- **Messages**: Camera frames, recognition updates, camera status, system alerts
 - **Clients**: Frontend components, admin dashboard
+- **LAN Access**: Dynamic host resolution for cross-device access
 
 ### External Dependencies
 - **OpenCV**: Computer vision operations
@@ -218,10 +222,11 @@ class Camera(Base):
 - Performance monitoring and statistics
 
 ### Real-time Processing
-- Frame sampling for inference optimization
-- Asynchronous processing for multiple cameras
-- WebSocket broadcasting for real-time updates
-- Resource management for concurrent streams
+- **WebSocket Video Streaming**: Low-latency JPEG frame transmission via WebSocket
+- **Frame Processing**: Smooth rendering with requestAnimationFrame for 30fps display
+- **Dynamic Host Resolution**: Automatic WebSocket URL construction for LAN access
+- **Connection Management**: Automatic reconnection and ping/pong keep-alive
+- **Resource Management**: Efficient frame queue processing for concurrent streams
 
 ## Security Considerations
 
