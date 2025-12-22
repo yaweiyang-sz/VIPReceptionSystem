@@ -4,47 +4,59 @@
 
 ### Use Case 1: Attendee Registration with Face Photo Upload
 
-**Description**: Register a new attendee and upload their face photo for recognition encoding.
+**Description**: Register a new attendee and upload their face photo for recognition encoding using placeholder engine with external service integration capability.
 
 **Actors**: Admin User, System
 
 **Preconditions**: 
 - Admin is logged into the system
-- Camera system is operational
+- Face recognition engine is initialized (placeholder mode)
 
 **Postconditions**:
-- Attendee is registered in the database
-- Face encoding is generated and stored
-- Photo is saved for display
+- Attendee is registered in the database with QR code
+- Photo is saved to `/app/data/faces/{attendee_id}.jpg`
+- Face encoding is attempted (placeholder/dummy encoding for development)
+- Face cache is updated for external service integration
 
 ```mermaid
 sequenceDiagram
     participant Admin as Admin User
     participant Frontend as Frontend UI
     participant Backend as Backend API
-    participant FaceEngine as FaceRecognitionEngine
+    participant FaceEngine as FaceRecognitionEngine (Placeholder)
     participant DB as Database
+    participant FileSystem as File System
 
     Admin->>Frontend: Fill attendee form
-    Admin->>Frontend: Upload face photo
     Frontend->>Backend: POST /api/attendees/
+    Backend->>DB: Check email uniqueness
+    Backend->>Backend: Generate UUID QR code
     Backend->>DB: Create attendee record
     DB-->>Backend: Attendee created (ID=123)
     Backend-->>Frontend: Attendee created response
     
+    Admin->>Frontend: Upload face photo
     Frontend->>Backend: POST /api/attendees/123/upload-photo
-    Backend->>Backend: Save photo to file system
+    Backend->>FileSystem: Save photo to /app/data/faces/123.jpg
     Backend->>FaceEngine: encode_face(photo_data)
-    FaceEngine->>FaceEngine: Detect faces in image
-    FaceEngine->>FaceEngine: Generate face encoding
-    FaceEngine-->>Backend: Face encoding result
+    
+    Note over FaceEngine: Placeholder implementation with external service integration
+    alt External service configured
+        FaceEngine->>ExternalService: HTTP POST /encode
+        ExternalService-->>FaceEngine: Face encoding result
+    else Development/placeholder mode
+        FaceEngine->>FaceEngine: Simulate encoding (0.1s delay)
+        FaceEngine-->>Backend: Dummy encoding result
+    end
     
     alt Face detected successfully
-        Backend->>DB: Update attendee with face_encoding
-        Backend->>FaceEngine: update_known_faces(attendee_id, encoding)
-        Backend-->>Frontend: Success: Face encoded
-    else No face detected
-        Backend-->>Frontend: Warning: No face detected
+        Backend->>DB: Update attendee.face_encoding
+        Backend->>DB: Update attendee.photo_url
+        Backend->>FaceEngine: update_known_faces(attendee_id, encoding, metadata)
+        Backend-->>Frontend: Success with face detection details
+    else No face detected or error
+        Backend->>DB: Update attendee.photo_url only
+        Backend-->>Frontend: Warning with detection details
     end
     
     Frontend->>Frontend: Update UI with photo preview
@@ -53,173 +65,226 @@ sequenceDiagram
 
 ### Use Case 2: Real-time Camera Streaming with WebSocket
 
-**Description**: Stream live camera video via WebSocket for real-time display with dummy recognition placeholder.
+**Description**: Stream live camera video via WebSocket with adaptive source handling (test patterns, webcam, RTSP, HTTP) and frame rate control.
 
 **Actors**: Frontend User, Camera System, System
 
 **Preconditions**:
-- Camera is configured in database
+- Camera is configured in database with source URL
 - Backend WebSocket server is running
 - Frontend can connect to backend WebSocket
 
 **Postconditions**:
-- WebSocket connection established
-- Live video frames streamed to frontend
-- Dummy recognition results simulated for demonstration
+- WebSocket connection established with stream info
+- Live video frames streamed at target FPS (default 15fps)
+- Adaptive JPEG quality based on frame size
+- Test mode fallback if real stream fails
 
 ```mermaid
 sequenceDiagram
     participant User as Frontend User
     participant Frontend as Frontend UI
     participant Backend as Backend API
-    participant WS as WebSocket Endpoint
-    participant CameraProc as Camera Stream Processor
+    participant WS as WebSocket Endpoint (/api/cameras/{id}/ws/stream)
+    participant OpenCV as OpenCV VideoCapture
     participant DB as Database
-    participant DummyEngine as Dummy Recognition Engine
 
     User->>Frontend: Select camera to view
     Frontend->>Backend: GET /api/cameras/{id}/stream
     Backend->>DB: Query camera configuration
-    DB-->>Backend: Camera source and details
+    DB-->>Backend: Camera source, FPS, resolution
     Backend-->>Frontend: Stream info with WebSocket URL
     
-    Frontend->>WS: Connect to WebSocket (ws://host:8000/api/cameras/{id}/ws/stream)
-    WS->>CameraProc: Initialize camera stream
-    CameraProc->>CameraProc: Open camera source (test://color_bars)
-    CameraProc-->>WS: Stream ready
-    WS-->>Frontend: WebSocket connected
+    Frontend->>WS: Connect to WebSocket
+    WS->>DB: Get camera details (new session)
+    DB-->>WS: Camera source and settings
     
-    Note over WS,Frontend: Real-time video streaming via WebSocket
-    loop Every frame (15fps)
-        CameraProc->>CameraProc: Generate/capture frame
-        CameraProc->>CameraProc: Encode frame as JPEG
-        CameraProc->>WS: Send frame as base64 JSON
-        WS->>Frontend: {"type": "frame", "data": "base64...", "frame_id": N}
-        Frontend->>Frontend: Decode and render frame on canvas
+    Note over WS: Adaptive source handling
+    alt Source is "0" or "test"
+        WS->>OpenCV: Open webcam (source=0)
+    else Source starts with "test://"
+        WS->>WS: Enable test mode with pattern
+    else Source starts with "rtsp://"
+        WS->>OpenCV: Open RTSP with TCP transport
+    else Other source (HTTP, file, etc.)
+        WS->>OpenCV: Open video source
     end
     
-    Note over CameraProc,DummyEngine: Dummy recognition for demonstration
-    CameraProc->>DummyEngine: simulate_recognition(frame)
-    DummyEngine->>DummyEngine: Generate simulated detection
-    DummyEngine-->>CameraProc: Simulated recognition result
+    alt Stream opened successfully
+        WS-->>Frontend: {"type": "connected", "camera_name": "...", "test_mode": false}
+    else Stream failed to open
+        WS->>WS: Fallback to test mode
+        WS-->>Frontend: {"type": "connected", "test_mode": true}
+    end
     
-    alt Simulated face detected
-        CameraProc->>WS: Send dummy recognition update
-        WS->>Frontend: {"type": "detection", "method": "face", "confidence": 0.85}
-        Frontend->>Frontend: Display simulated detection overlay
+    WS-->>Frontend: {"type": "stream_info", "width": 640, "height": 480, "fps": 15, "format": "jpeg"}
+    
+    Note over WS,Frontend: Real-time video streaming with frame rate control
+    loop Every frame (target FPS)
+        alt Test mode active
+            WS->>WS: generate_test_frame(frame_count, pattern)
+        else Real stream
+            WS->>OpenCV: Read frame
+            OpenCV-->>WS: Frame data
+        end
+        
+        WS->>WS: Resize frame (maintain aspect ratio, max 640px)
+        WS->>WS: Encode as JPEG with adaptive quality
+        WS->>WS: Convert to base64
+        
+        WS->>Frontend: {"type": "frame", "camera_id": id, "frame_id": N, "data": "base64...", "width": W, "height": H, "test_mode": bool}
+        Frontend->>Frontend: Decode base64 and render on canvas
+        
+        Note over WS: Frame timing control
+        WS->>WS: Calculate processing time
+        WS->>WS: Sleep for (1/fps - processing_time)
+    end
+    
+    Note over WS,Frontend: WebSocket keep-alive
+    loop Periodically
+        Frontend->>WS: {"type": "ping"}
+        WS-->>Frontend: {"type": "pong", "timestamp": ...}
     end
     
     User->>Frontend: Close camera view
     Frontend->>WS: Close WebSocket connection
-    WS->>CameraProc: Stop camera stream
-    CameraProc->>CameraProc: Release camera resources
+    alt Real stream was active
+        WS->>OpenCV: Release capture
+    end
+    WS->>DB: Close database session
 ```
 
 ### Use Case 3: QR Code Check-in Process
 
-**Description**: Attendee checks in using QR code displayed on their mobile device or badge.
+**Description**: Attendee checks in using QR code via API endpoint or real-time camera stream processing.
 
 **Actors**: Attendee, Camera System, System
 
 **Preconditions**:
-- Attendee has valid QR code
-- Camera is active and streaming
-- QR code scanning is enabled
+- Attendee has valid QR code (UUID generated during registration)
+- Camera is active and streaming (for real-time) OR image can be captured
+- QR code scanning is enabled via pyzbar library
 
 **Postconditions**:
 - Attendee is checked in via QR code
-- Visit record is created
-- Real-time notification is sent
+- Visit record is created with method "qr_code"
+- Attendee status updated to "checked_in"
+- Real-time WebSocket notification sent to frontend
 
 ```mermaid
 sequenceDiagram
     participant Attendee as Attendee
-    participant Camera as Camera Stream
-    participant Processor as CameraStreamProcessor
-    participant QREngine as QRCodeEngine
+    participant Frontend as Frontend UI
+    participant Backend as Backend API
+    participant QREngine as QRCodeEngine (pyzbar)
     participant DB as Database
     participant WS as WebSocket Manager
-    participant Frontend as Frontend Display
 
-    Attendee->>Camera: Show QR code to camera
-    Camera->>Processor: Stream video frames
-    Processor->>Processor: Sample frame for QR detection
-    Processor->>QREngine: scan_qr_code(frame)
-    QREngine->>QREngine: Detect QR code in frame
-    QREngine->>QREngine: Decode QR data
-    QREngine-->>Processor: QR code data (attendee_id)
-    
-    alt Valid QR code decoded
-        Processor->>DB: Verify attendee exists
-        DB-->>Processor: Attendee data
-        Processor->>DB: Create visit record
-        DB-->>Processor: Visit created
-        Processor->>WS: Broadcast QR check-in
-        WS->>Frontend: Real-time check-in alert
-        Frontend->>Frontend: Display attendee info
-        Frontend->>Frontend: Highlight QR detection
-    else Invalid or no QR code
-        Processor->>WS: Broadcast QR scan failed
-        WS->>Frontend: Show scan failed message
+    alt Method A: Direct API call with captured image
+        Attendee->>Frontend: Show QR code to camera (capture)
+        Frontend->>Frontend: Capture image as base64
+        Frontend->>Backend: POST /api/recognition/qr
+        Backend->>Backend: Decode base64 to image bytes
+        Backend->>QREngine: scan_qr_code(image)
+        QREngine->>QREngine: Detect QR code with pyzbar.decode()
+        QREngine-->>Backend: QR data (UUID string)
+        
+    else Method B: Real-time stream processing
+        Attendee->>Camera: Show QR code to live camera
+        Camera->>CameraStreamProcessor: Stream frames
+        CameraStreamProcessor->>QREngine: scan_qr_code(frame)
+        QREngine->>QREngine: Detect QR code with pyzbar.decode()
+        QREngine-->>CameraStreamProcessor: QR data (UUID string)
+        CameraStreamProcessor->>Backend: Process QR recognition
     end
     
-    Processor->>Processor: Annotate frame with QR detection
-    Processor-->>Camera: Continue processing
+    alt Valid QR code decoded (UUID matches attendee)
+        Backend->>DB: Query attendee by qr_code
+        DB-->>Backend: Attendee record
+        Backend->>DB: Create visit record (method: qr_code)
+        Backend->>DB: Update attendee.status = "checked_in"
+        DB-->>Backend: Records updated
+        
+        Backend->>WS: Broadcast attendee_recognized
+        WS->>Frontend: {"type": "attendee_recognized", "recognition_method": "qr_code", ...}
+        Frontend->>Frontend: Display check-in notification
+        Frontend->>Frontend: Update attendee list
+        
+        Backend-->>Frontend: Success response with attendee details
+    else Invalid or no QR code
+        Backend-->>Frontend: Error: "Invalid or unrecognized QR code"
+    end
 ```
 
 ### Use Case 4: Dual Recognition Fallback Process
 
-**Description**: System attempts both face recognition and QR code scanning, using the first successful method.
+**Description**: System attempts both face recognition and QR code scanning sequentially via /api/recognition/auto endpoint, using the first successful method.
 
 **Actors**: Attendee, Camera System, System
 
 **Preconditions**:
-- Camera is active and streaming
-- Both recognition methods are enabled
+- Image can be captured (base64 encoded)
+- Both recognition methods are available
 - Attendee may have face encoding and/or QR code
 
 **Postconditions**:
-- Attendee is recognized by either method
-- Visit record is created
-- System logs which method was successful
+- Attendee is recognized by either method (face first, then QR)
+- Visit record is created with successful method
+- Attendee status updated to "checked_in"
+- Real-time WebSocket notification sent
 
 ```mermaid
 sequenceDiagram
     participant Attendee as Attendee
-    participant Camera as Camera Stream
-    participant Processor as CameraStreamProcessor
+    participant Frontend as Frontend UI
+    participant Backend as Backend API
     participant FaceEngine as FaceRecognitionEngine
     participant QREngine as QRCodeEngine
     participant DB as Database
     participant WS as WebSocket Manager
 
-    Attendee->>Camera: Approach with face/QR code
-    Camera->>Processor: Stream video frames
+    Attendee->>Frontend: Show face/QR code to camera
+    Frontend->>Frontend: Capture image as base64
+    Frontend->>Backend: POST /api/recognition/auto
     
-    Note over Processor: Parallel recognition attempts
-    Processor->>FaceEngine: recognize_face(frame)
-    Processor->>QREngine: scan_qr_code(frame)
+    Note over Backend: Sequential recognition attempts (face first, then QR)
     
-    alt Face recognized first
-        FaceEngine-->>Processor: Face recognition result
-        Processor->>DB: Create visit (method: face)
-        Processor->>WS: Broadcast face recognition
-        Processor->>QREngine: Cancel QR processing
-    else QR code recognized first
-        QREngine-->>Processor: QR recognition result
-        Processor->>DB: Create visit (method: qr)
-        Processor->>WS: Broadcast QR recognition
-        Processor->>FaceEngine: Cancel face processing
-    else Both methods succeed
-        Processor->>Processor: Use face recognition (higher priority)
-        Processor->>DB: Create visit (method: face)
-        Processor->>WS: Broadcast dual recognition
-    else No recognition
-        Processor->>WS: Broadcast no recognition
+    Backend->>Backend: Decode base64 to image
+    Backend->>FaceEngine: recognize_face(image)
+    
+    alt Face recognition successful
+        FaceEngine-->>Backend: Recognition result with attendee_id
+        Backend->>DB: Query attendee by ID
+        DB-->>Backend: Attendee record
+        Backend->>DB: Create visit (method: face)
+        Backend->>DB: Update attendee.status = "checked_in"
+        DB-->>Backend: Records updated
+        
+        Backend->>WS: Broadcast attendee_recognized (method: face)
+        WS->>Frontend: Real-time notification
+        Backend-->>Frontend: Success response with face recognition details
+        
+    else Face recognition failed
+        Backend->>QREngine: scan_qr_code(image)
+        
+        alt QR code recognition successful
+            QREngine-->>Backend: QR data (UUID)
+            Backend->>DB: Query attendee by qr_code
+            DB-->>Backend: Attendee record
+            Backend->>DB: Create visit (method: qr_code)
+            Backend->>DB: Update attendee.status = "checked_in"
+            DB-->>Backend: Records updated
+            
+            Backend->>WS: Broadcast attendee_recognized (method: qr_code)
+            WS->>Frontend: Real-time notification
+            Backend-->>Frontend: Success response with QR recognition details
+            
+        else Both methods failed
+            Backend-->>Frontend: Error: "No matching attendee found"
+        end
     end
     
-    DB-->>Processor: Visit record created
-    Processor->>Processor: Annotate frame with results
+    Frontend->>Frontend: Update UI based on recognition result
 ```
 
 ### Use Case 5: Camera Stream Management with WebSocket
@@ -341,27 +406,47 @@ sequenceDiagram
 
 ## Key System Interactions Summary
 
-1. **Registration Flow**: Admin → Frontend → Backend → Database → Face Engine (Dummy)
-2. **Video Streaming Flow**: Frontend → Backend → WebSocket → Camera Processor → Frame Generation → Frontend Display
-3. **Camera Management Flow**: Admin → Frontend → Backend → Database → WebSocket Configuration
-4. **Monitoring Flow**: Admin → Frontend → Backend → System Components → Real-time Updates
+1. **Registration Flow**: Admin → Frontend → Backend → Database (with QR generation) → File System (photo storage) → Face Recognition Engine (placeholder with external service integration)
+2. **Video Streaming Flow**: Frontend → Backend → WebSocket Endpoint → OpenCV VideoCapture → Adaptive Frame Processing → Frontend Canvas Rendering
+3. **Recognition Flow**: 
+   - **Face**: Frontend → Backend → FaceRecognitionEngine (placeholder) → Database (visit creation) → WebSocket Broadcast
+   - **QR Code**: Frontend → Backend → QRCodeEngine (pyzbar) → Database (attendee lookup) → Visit Creation → WebSocket Broadcast
+   - **Auto**: Sequential attempt of face then QR with fallback
+4. **Camera Management Flow**: Admin → Frontend → Backend → Database (CRUD operations) → Automatic WebSocket endpoint generation
+5. **Monitoring Flow**: Admin Dashboard → Backend API → System Components (FaceEngine, CameraStreamProcessor) → Database Metrics → Real-time WebSocket Updates
 
-### Updated Architecture Highlights:
+### Current Implementation Architecture:
 
 #### **WebSocket Video Streaming**:
-- **Connection**: Frontend connects to `ws://host:8000/api/cameras/{id}/ws/stream`
-- **Frame Transmission**: JPEG frames as base64 in JSON messages
-- **Real-time Display**: Canvas-based rendering with smooth 30fps processing
-- **LAN Access**: Dynamic host resolution for cross-device accessibility
+- **Endpoint**: `/api/cameras/{id}/ws/stream` with connection management via `ConnectionManager`
+- **Frame Processing**: Adaptive JPEG encoding with quality based on frame size, target FPS control (default 15fps)
+- **Source Handling**: Supports webcam (source=0), RTSP (with TCP transport), HTTP streams, and test patterns (`test://color_bars`, `test://default`)
+- **Fallback Mechanism**: Automatic switch to test mode if real stream fails to open
+- **Frame Timing**: Dynamic sleep calculation to maintain consistent frame rate
 
-#### **Dummy Recognition Implementation**:
-- **Face Recognition**: Simulated results for demonstration
-- **QR Code Scanning**: Placeholder for future integration
-- **Interface Preservation**: Maintains API for easy external service integration
+#### **Recognition Engine Architecture**:
+- **FaceRecognitionEngine**: Placeholder implementation with external service integration hooks
+  - `encode_face()`: Simulates encoding (0.1s delay) or calls external service if configured
+  - `recognize_face()`: Returns dummy results for demo (attendee_id=1, confidence=0.85)
+  - External service integration via HTTP POST to configured endpoint
+- **QRCodeEngine**: Functional implementation using `pyzbar` library
+  - `scan_qr_code()`: Detects and decodes QR codes from images
+  - Supports UUID QR codes generated during attendee registration
+- **CameraStreamProcessor**: Real-time processing with parallel face and QR recognition
+  - Processes frames every 10 frames for performance
+  - Annotates frames with detection rectangles
+  - Sends recognition updates via WebSocket
 
-#### **Camera Source Support**:
-- **Test Patterns**: `test://color_bars`, `test://default` for development
-- **Real Cameras**: Webcam (source=0), RTSP, HTTP streams
-- **Fallback**: Automatic switch to test mode on stream failure
+#### **Database Integration**:
+- **Attendee Management**: Full CRUD with email uniqueness validation, QR code generation (UUID)
+- **Visit Tracking**: Automatic visit record creation on successful recognition
+- **Status Management**: Attendee status updates ("checked_in", "checked_out")
+- **Photo Storage**: Files saved to `/app/data/faces/{attendee_id}.jpg` with serving endpoint
 
-These sequence diagrams illustrate the core business processes and system interactions that make the VIP Reception System functional and efficient for aviation exhibition management with WebSocket-based video streaming and ready-for-integration recognition architecture.
+#### **API Endpoints**:
+- **Cameras**: `/api/cameras/` - CRUD operations, stream info, WebSocket streaming
+- **Recognition**: `/api/recognition/face`, `/api/recognition/qr`, `/api/recognition/auto` - recognition endpoints
+- **Attendees**: `/api/attendees/` - CRUD, photo upload, visit history, check-out
+- **Admin**: `/api/admin/` - performance monitoring, system logs
+
+These sequence diagrams accurately reflect the current implementation of the VIP Reception System, showing both the placeholder/demo components ready for external service integration and the fully functional components (QR code scanning, WebSocket streaming, database management).
