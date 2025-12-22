@@ -36,56 +36,74 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
 
   // WebSocket connection for camera stream
   useEffect(() => {
-    if (!streamInfo || !streamInfo.websocket_url) return
+    if (!streamInfo || !streamInfo.websocket_url || !camera) return
+
+    let isMounted = true
+    let pingInterval = null
+    let reconnectTimeout = null
 
     const connectWebSocket = () => {
+      // Clean up any existing connection
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close()
+      }
+      
       // Determine backend URL based on current host
-      // In development, backend runs on port 8000, frontend on 3000
-      // When accessed from LAN, use the same hostname with port 8000
       let backendHost
       if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        // Local development
         backendHost = `${window.location.hostname}:8000`
       } else {
-        // LAN access or production - backend is on same host but port 8000
         backendHost = `${window.location.hostname}:8000`
       }
       
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsUrl = `${protocol}//${backendHost}${streamInfo.websocket_url}`
       
-      console.log(`Connecting to WebSocket: ${wsUrl}`)
+      console.log(`Connecting to WebSocket for camera ${camera.id}: ${wsUrl}`)
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
       ws.onopen = () => {
-        console.log('WebSocket connected to camera stream')
+        if (!isMounted) return
+        console.log(`WebSocket connected to camera ${camera.id} stream`)
         setConnected(true)
         setError(null)
       }
 
       ws.onmessage = (event) => {
+        if (!isMounted || !camera) return
+        
         try {
           const message = JSON.parse(event.data)
-          console.log('WebSocket message received:', message.type)
           
           switch (message.type) {
             case 'connected':
-              console.log('Camera stream connected:', message.message)
+              console.log(`Camera ${camera.id} stream connected:`, message.message)
               break
               
             case 'stream_info':
-              console.log('Stream info:', message)
+              console.log(`Camera ${camera.id} stream info:`, message)
               break
               
             case 'frame':
-              // Add frame to queue for processing
-              frameQueueRef.current.push(message)
-              processFrameQueue()
+              // Strict filtering by camera_id with null checks
+              if (camera && message.camera_id !== undefined && message.camera_id === camera.id) {
+                // Limit queue size to prevent memory buildup
+                if (frameQueueRef.current.length < 5) {
+                  frameQueueRef.current.push(message)
+                } else {
+                  // Drop oldest frame if queue is full
+                  frameQueueRef.current.shift()
+                  frameQueueRef.current.push(message)
+                }
+                processFrameQueue()
+              } else {
+                console.log(`Camera ${camera?.id || 'unknown'}: Ignoring frame from camera ${message.camera_id} (expected ${camera?.id})`)
+              }
               break
               
             case 'error':
-              console.error('Camera stream error:', message.message)
+              console.error(`Camera ${camera.id} stream error:`, message.message)
               setError(message.message)
               break
               
@@ -94,59 +112,62 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
               break
               
             default:
-              console.log('Unknown message type:', message.type)
+              console.log(`Camera ${camera.id}: Unknown message type:`, message.type)
           }
         } catch (err) {
-          console.error('Error parsing WebSocket message:', err, 'Raw data:', event.data)
+          console.error(`Camera ${camera.id}: Error parsing WebSocket message:`, err, 'Raw data:', event.data)
         }
       }
 
       ws.onerror = (error) => {
-        console.error('WebSocket error event:', error)
-        setError('WebSocket connection error - check console for details')
+        if (!isMounted) return
+        console.error(`Camera ${camera.id} WebSocket error event:`, error)
+        setError('WebSocket connection error')
         setConnected(false)
       }
 
       ws.onclose = (event) => {
-        console.log('WebSocket disconnected:', event.code, event.reason)
+        if (!isMounted) return
+        console.log(`Camera ${camera.id} WebSocket disconnected:`, event.code, event.reason)
         setConnected(false)
         
-        // Try to reconnect after 3 seconds
-        setTimeout(() => {
-          if (streamInfo) {
-            console.log('Attempting to reconnect...')
+        // Try to reconnect after 3 seconds if still mounted
+        if (isMounted && streamInfo) {
+          reconnectTimeout = setTimeout(() => {
+            console.log(`Camera ${camera.id}: Attempting to reconnect...`)
             connectWebSocket()
-          }
-        }, 3000)
+          }, 3000)
+        }
       }
 
       // Send periodic ping to keep connection alive
-      const pingInterval = setInterval(() => {
+      pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'ping' }))
         }
       }, 30000)
-
-      return () => {
-        clearInterval(pingInterval)
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close()
-        }
-      }
     }
 
-    const cleanup = connectWebSocket()
+    connectWebSocket()
 
     return () => {
-      if (cleanup) cleanup()
+      isMounted = false
+      
+      // Clear intervals and timeouts
+      if (pingInterval) clearInterval(pingInterval)
+      if (reconnectTimeout) clearTimeout(reconnectTimeout)
+      
+      // Close WebSocket
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close()
       }
       wsRef.current = null
+      
+      // Clear frame queue
       frameQueueRef.current = []
       isProcessingRef.current = false
     }
-  }, [streamInfo])
+  }, [streamInfo, camera])  // Depend on camera.id to reconnect when camera changes
 
   // Process frame queue to display video
   const processFrameQueue = () => {
@@ -156,38 +177,117 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
 
     isProcessingRef.current = true
     
-    // Process all available frames in the queue
-    const processFrames = () => {
-      while (frameQueueRef.current.length > 0) {
-        const frame = frameQueueRef.current.shift()
+    // Get the latest frame (drop old frames to maintain real-time)
+    let latestFrame = null
+    while (frameQueueRef.current.length > 0) {
+      latestFrame = frameQueueRef.current.shift()
+    }
+    
+    // Process the latest frame
+    if (latestFrame) {
+      const img = new Image()
+      
+      // Use frame dimensions if available, otherwise use default
+      const frameWidth = latestFrame.width || 320
+      const frameHeight = latestFrame.height || 240
+      
+      // Update canvas dimensions to match frame aspect ratio
+      if (videoRef.current) {
+        const canvas = videoRef.current
+        const displayWidth = 640  // Fixed display width
+        const displayHeight = Math.round(displayWidth * (frameHeight / frameWidth))
         
-        // Create image from base64 data
-        const img = new Image()
-        img.onload = () => {
-          // Update video element if it exists
-          if (videoRef.current) {
-            const video = videoRef.current
-            const ctx = video.getContext('2d')
-            ctx.clearRect(0, 0, video.width, video.height)
-            ctx.drawImage(img, 0, 0, video.width, video.height)
-          }
+        // Only resize if dimensions changed significantly
+        if (Math.abs(canvas.width - displayWidth) > 10 || Math.abs(canvas.height - displayHeight) > 10) {
+          canvas.width = displayWidth
+          canvas.height = displayHeight
         }
-        
-        img.src = `data:image/jpeg;base64,${frame.data}`
       }
       
+      // Store current processing state to prevent race conditions
+      const processingId = Date.now()
+      const currentProcessingRef = { id: processingId }
+      
+      img.onload = () => {
+        // Check if this is still the current processing request
+        if (currentProcessingRef.id !== processingId) {
+          console.log('Skipping stale frame load')
+          return
+        }
+        
+        // Update video element if it exists
+        if (videoRef.current) {
+          const canvas = videoRef.current
+          const ctx = canvas.getContext('2d')
+          
+          // Clear canvas completely
+          ctx.clearRect(0, 0, canvas.width, canvas.height)
+          
+          // Draw image centered and scaled to fit canvas
+          const scale = Math.min(canvas.width / img.width, canvas.height / img.height)
+          const x = (canvas.width - img.width * scale) / 2
+          const y = (canvas.height - img.height * scale) / 2
+          
+          // Use image smoothing for better quality
+          ctx.imageSmoothingEnabled = true
+          ctx.imageSmoothingQuality = 'high'
+          
+          ctx.drawImage(img, x, y, img.width * scale, img.height * scale)
+        }
+        
+        // Mark processing as complete
+        isProcessingRef.current = false
+        
+        // Use requestAnimationFrame for next processing to ensure smooth timing
+        requestAnimationFrame(() => {
+          if (frameQueueRef.current.length > 0) {
+            processFrameQueue()
+          }
+        })
+      }
+      
+      img.onerror = () => {
+        // Check if this is still the current processing request
+        if (currentProcessingRef.id !== processingId) {
+          return
+        }
+        
+        console.error('Failed to load frame image')
+        isProcessingRef.current = false
+        
+        // Use requestAnimationFrame for next processing
+        requestAnimationFrame(() => {
+          if (frameQueueRef.current.length > 0) {
+            processFrameQueue()
+          }
+        })
+      }
+      
+      img.src = `data:image/jpeg;base64,${latestFrame.data}`
+      
+      // Set a timeout to ensure processing doesn't get stuck
+      setTimeout(() => {
+        if (currentProcessingRef.id === processingId && isProcessingRef.current) {
+          console.log('Frame loading timeout, resetting processing state')
+          isProcessingRef.current = false
+          
+          requestAnimationFrame(() => {
+            if (frameQueueRef.current.length > 0) {
+              processFrameQueue()
+            }
+          })
+        }
+      }, 1000) // 1 second timeout
+    } else {
       isProcessingRef.current = false
       
-      // Schedule next processing batch
-      setTimeout(() => {
+      // Use requestAnimationFrame for next processing
+      requestAnimationFrame(() => {
         if (frameQueueRef.current.length > 0) {
           processFrameQueue()
         }
-      }, 33) // ~30 fps
+      })
     }
-
-    // Use requestAnimationFrame for smoother rendering
-    requestAnimationFrame(processFrames)
   }
 
   // Initialize canvas for video display
@@ -233,21 +333,33 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
       const ctx = overlayCanvas.getContext('2d')
       ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height)
       
-      // Scale detection coordinates from frame size to display size
+      // Get current frame dimensions from the latest frame in queue
+      let frameWidth = 320
+      let frameHeight = 240
+      if (frameQueueRef.current.length > 0) {
+        const latestFrame = frameQueueRef.current[frameQueueRef.current.length - 1]
+        frameWidth = latestFrame.width || 320
+        frameHeight = latestFrame.height || 240
+      }
+      
+      // Calculate scaling from original frame to displayed canvas
       const displayWidth = videoCanvas.width
       const displayHeight = videoCanvas.height
+      
+      // Calculate how the image is scaled and positioned on canvas
+      const scale = Math.min(displayWidth / frameWidth, displayHeight / frameHeight)
+      const xOffset = (displayWidth - frameWidth * scale) / 2
+      const yOffset = (displayHeight - frameHeight * scale) / 2
 
       detections.forEach(detection => {
         if (detection.type === 'face' && detection.location) {
           const [top, right, bottom, left] = detection.location
           
-          // Scale coordinates to match display size (assuming original frame is 320x240)
-          const scaleX = displayWidth / 320
-          const scaleY = displayHeight / 240
-          const scaledLeft = left * scaleX
-          const scaledTop = top * scaleY
-          const scaledWidth = (right - left) * scaleX
-          const scaledHeight = (bottom - top) * scaleY
+          // Scale coordinates from original frame to display
+          const scaledLeft = xOffset + left * scale
+          const scaledTop = yOffset + top * scale
+          const scaledWidth = (right - left) * scale
+          const scaledHeight = (bottom - top) * scale
 
           // Draw face detection rectangle
           ctx.strokeStyle = '#00ff00'

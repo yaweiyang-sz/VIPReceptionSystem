@@ -184,11 +184,18 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
         frame_count = 0
         last_ping_time = asyncio.get_event_loop().time()
         
+        # Frame timing control
+        target_fps = camera.fps if camera.fps and camera.fps > 0 else 15
+        frame_interval = 1.0 / target_fps
+        last_frame_time = asyncio.get_event_loop().time()
+        
         while True:
             try:
+                frame_start_time = asyncio.get_event_loop().time()
+                
                 # Check for client messages (ping/pong)
                 try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)  # Reduced timeout
                     message = json.loads(data)
                     
                     if message.get("type") == "ping":
@@ -240,26 +247,55 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                 # Increment frame count
                 frame_count += 1
                 
-                # Resize frame for lower bandwidth
-                frame = cv2.resize(frame, (320, 240))
+                # Get original frame dimensions
+                original_height, original_width = frame.shape[:2]
                 
-                # Encode frame as JPEG
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                # Calculate target dimensions maintaining aspect ratio
+                # Target max dimension 640px for better quality but reasonable bandwidth
+                max_dimension = 640
+                if original_width > original_height:
+                    target_width = max_dimension
+                    target_height = int(original_height * (max_dimension / original_width))
+                else:
+                    target_height = max_dimension
+                    target_width = int(original_width * (max_dimension / original_height))
+                
+                # Ensure even dimensions (helps with some codecs)
+                target_width = target_width - (target_width % 2)
+                target_height = target_height - (target_height % 2)
+                
+                # Resize frame for optimal bandwidth/quality balance
+                frame = cv2.resize(frame, (target_width, target_height))
+                
+                # Encode frame as JPEG with adaptive quality
+                # Higher quality for smaller images, lower for larger
+                jpeg_quality = max(50, 90 - (target_width * target_height) // 5000)
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
                 frame_data = base64.b64encode(buffer).decode('utf-8')
                 
                 # Send frame via WebSocket
                 await websocket.send_text(json.dumps({
                     "type": "frame",
+                    "camera_id": camera_id,  # Add camera_id for filtering
                     "frame_id": frame_count,
                     "timestamp": asyncio.get_event_loop().time(),
                     "data": frame_data,
-                    "width": 320,
-                    "height": 240,
+                    "width": target_width,
+                    "height": target_height,
+                    "original_width": original_width,
+                    "original_height": original_height,
                     "test_mode": test_mode
                 }))
                 
-                # Small delay to control frame rate
-                await asyncio.sleep(0.05)
+                # Calculate dynamic sleep time based on target FPS
+                processing_end = asyncio.get_event_loop().time()
+                processing_time = processing_end - frame_start_time
+                sleep_time = max(0.001, frame_interval - processing_time)
+                
+                # Update last frame time
+                last_frame_time = processing_end
+                
+                await asyncio.sleep(sleep_time)
                 
             except WebSocketDisconnect:
                 break
