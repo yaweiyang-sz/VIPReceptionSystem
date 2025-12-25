@@ -6,11 +6,16 @@ import asyncio
 import cv2
 import base64
 import numpy as np
+import os
 
 from app.database import get_db, Camera, SessionLocal
 from app.schemas import CameraCreate, CameraResponse
 from app.websocket_manager import manager
 from app.recognition_engine import face_recognition_engine
+
+# Read environment variable for dummy face detection toggle
+DUMMY_FACE_DETECTION = os.getenv("DUMMY_FACE_DETECTION", "false").lower() == "true"
+print(f"DEBUG: DUMMY_FACE_DETECTION environment variable is set to: {DUMMY_FACE_DETECTION}")
 
 router = APIRouter()
 
@@ -256,10 +261,84 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                     # This prevents blocking the frame streaming
                     async def process_recognition_async(frame_to_process, db_session, current_frame_count):
                         try:
+                            # Check if dummy face detection is enabled
+                            if DUMMY_FACE_DETECTION and current_frame_count % 100 == 0:
+                                # Create dummy recognition result for testing
+                                dummy_result = {
+                                    'attendee_id': 999,
+                                    'confidence': 0.85,
+                                    'face_location': (100, 300, 200, 200),  # top, right, bottom, left
+                                    'attendee_name': 'John Doe (Test)',
+                                    'first_name': 'John',
+                                    'last_name': 'Doe',
+                                    'company': 'Test Corporation',
+                                    'position': 'VIP Guest',
+                                    'is_vip': True,
+                                    'email': 'john.doe@test.com',
+                                    'phone': '+1-555-123-4567'
+                                }
+                                print(f"DEBUG: DUMMY Face recognized in frame {current_frame_count}: {dummy_result['attendee_name']} with confidence {dummy_result['confidence']:.2f}")
+                                
+                                # Send recognition update via WebSocket manager (for recognition WebSocket)
+                                update_data = {
+                                    "type": "recognition_update",
+                                    "camera_id": camera_id,
+                                    "timestamp": asyncio.get_event_loop().time(),
+                                    "frame_width": frame_to_process.shape[1],
+                                    "frame_height": frame_to_process.shape[0],
+                                    "detections": [{
+                                        "type": "face",
+                                        "confidence": dummy_result['confidence'],
+                                        "attendee_id": dummy_result['attendee_id'],
+                                        "attendee_name": dummy_result['attendee_name'],
+                                        "location": dummy_result['face_location'],
+                                        "is_vip": dummy_result['is_vip'],
+                                        "company": dummy_result['company'],
+                                        "position": dummy_result['position']
+                                    }]
+                                }
+                                await manager.broadcast(update_data)
+                                
+                                # Also send to camera stream WebSocket for immediate feedback
+                                try:
+                                    await websocket.send_text(json.dumps({
+                                        "type": "recognition",
+                                        "camera_id": camera_id,
+                                        "frame_id": current_frame_count,
+                                        "timestamp": asyncio.get_event_loop().time(),
+                                        "result": dummy_result
+                                    }))
+                                except Exception as ws_error:
+                                    print(f"DEBUG: Failed to send recognition result via camera WebSocket: {ws_error}")
+                                
+                                return
+                            
+                            # Normal face recognition
                             recognition_result = await face_recognition_engine.recognize_face(frame_to_process, db_session)
                             if recognition_result:
                                 print(f"DEBUG: Face recognized in frame {current_frame_count}: {recognition_result.get('attendee_name', 'Unknown')} with confidence {recognition_result.get('confidence', 0.0):.2f}")
-                                # Send recognition results via WebSocket
+                                
+                                # Send recognition update via WebSocket manager (for recognition WebSocket)
+                                update_data = {
+                                    "type": "recognition_update",
+                                    "camera_id": camera_id,
+                                    "timestamp": asyncio.get_event_loop().time(),
+                                    "frame_width": frame_to_process.shape[1],
+                                    "frame_height": frame_to_process.shape[0],
+                                    "detections": [{
+                                        "type": "face",
+                                        "confidence": recognition_result.get('confidence', 0.0),
+                                        "attendee_id": recognition_result.get('attendee_id'),
+                                        "attendee_name": recognition_result.get('attendee_name', 'Unknown'),
+                                        "location": recognition_result.get('face_location'),
+                                        "is_vip": recognition_result.get('is_vip', False),
+                                        "company": recognition_result.get('company', ''),
+                                        "position": recognition_result.get('position', '')
+                                    }]
+                                }
+                                await manager.broadcast(update_data)
+                                
+                                # Also send to camera stream WebSocket for immediate feedback
                                 try:
                                     await websocket.send_text(json.dumps({
                                         "type": "recognition",
@@ -269,7 +348,7 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                                         "result": recognition_result
                                     }))
                                 except Exception as ws_error:
-                                    print(f"DEBUG: Failed to send recognition result via WebSocket: {ws_error}")
+                                    print(f"DEBUG: Failed to send recognition result via camera WebSocket: {ws_error}")
                             else:
                                 print(f"DEBUG: No face recognized in frame {current_frame_count}")
                         except Exception as e:
