@@ -10,6 +10,7 @@ import numpy as np
 from app.database import get_db, Camera, SessionLocal
 from app.schemas import CameraCreate, CameraResponse
 from app.websocket_manager import manager
+from app.recognition_engine import face_recognition_engine
 
 router = APIRouter()
 
@@ -244,9 +245,42 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                             if not ret:
                                 continue
                 
+                # Perform face recognition on the captured frame (every 20 frames for performance)
+                # Use a separate task to avoid blocking the frame processing
+                recognition_interval = 20
+                if frame_count % recognition_interval == 0:
+                    # Create a copy of the frame for async processing to avoid frame modification issues
+                    frame_copy = frame.copy() if hasattr(frame, 'copy') else frame
+                    
+                    # Run recognition asynchronously without waiting for completion
+                    # This prevents blocking the frame streaming
+                    async def process_recognition_async(frame_to_process, db_session, current_frame_count):
+                        try:
+                            recognition_result = await face_recognition_engine.recognize_face(frame_to_process, db_session)
+                            if recognition_result:
+                                print(f"DEBUG: Face recognized in frame {current_frame_count}: {recognition_result.get('attendee_name', 'Unknown')} with confidence {recognition_result.get('confidence', 0.0):.2f}")
+                                # Send recognition results via WebSocket
+                                try:
+                                    await websocket.send_text(json.dumps({
+                                        "type": "recognition",
+                                        "camera_id": camera_id,
+                                        "frame_id": current_frame_count,
+                                        "timestamp": asyncio.get_event_loop().time(),
+                                        "result": recognition_result
+                                    }))
+                                except Exception as ws_error:
+                                    print(f"DEBUG: Failed to send recognition result via WebSocket: {ws_error}")
+                            else:
+                                print(f"DEBUG: No face recognized in frame {current_frame_count}")
+                        except Exception as e:
+                            print(f"DEBUG: Face recognition error in frame {current_frame_count}: {e}")
+                    
+                    # Start the recognition task without waiting for it to complete
+                    asyncio.create_task(process_recognition_async(frame_copy, db, frame_count))
+                
                 # Increment frame count
                 frame_count += 1
-                
+
                 # Get original frame dimensions
                 original_height, original_width = frame.shape[:2]
                 

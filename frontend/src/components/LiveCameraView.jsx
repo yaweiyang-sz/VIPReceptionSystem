@@ -308,18 +308,111 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
     ctx.fillText('Waiting for camera stream...', canvas.width / 2, canvas.height / 2)
   }, [])
 
-  // Handle detection updates (placeholder for now)
+  // Handle WebSocket connection for recognition updates
   useEffect(() => {
     if (!camera || !connected) return
 
-    // For now, we'll use a placeholder for detections
-    // In a production system, this would connect to recognition WebSocket
-    const interval = setInterval(() => {
-      setDetections([])
-    }, 5000)
+    let isMounted = true
+    let recognitionWs = null
+    let reconnectTimeout = null
+
+    const connectRecognitionWebSocket = () => {
+      // Determine backend URL based on current host
+      let backendHost
+      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        backendHost = `${window.location.hostname}:8000`
+      } else {
+        backendHost = `${window.location.hostname}:8000`
+      }
+      
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsUrl = `${protocol}//${backendHost}/api/ws/recognition`
+      
+      console.log(`Connecting to recognition WebSocket: ${wsUrl}`)
+      recognitionWs = new WebSocket(wsUrl)
+
+      recognitionWs.onopen = () => {
+        if (!isMounted) return
+        console.log('Recognition WebSocket connected')
+        
+        // Subscribe to camera recognition updates
+        if (camera) {
+          recognitionWs.send(JSON.stringify({
+            type: 'subscribe',
+            camera_id: camera.id
+          }))
+        }
+      }
+
+      recognitionWs.onmessage = (event) => {
+        if (!isMounted || !camera) return
+        
+        try {
+          const message = JSON.parse(event.data)
+          
+          if (message.type === 'recognition_update' && message.camera_id === camera.id) {
+            // Update detections with VIP information
+            const updatedDetections = message.detections || []
+            
+            // Enhance face detections with VIP information
+            const enhancedDetections = updatedDetections.map(detection => {
+              if (detection.type === 'face' && detection.attendee_id) {
+                // This is where we would fetch additional VIP info
+                // For now, we'll add VIP flag based on attendee_id
+                return {
+                  ...detection,
+                  is_vip: detection.attendee_id % 3 === 0, // Example: every 3rd attendee is VIP
+                  vip_info: detection.attendee_id % 3 === 0 ? {
+                    priority: 'High',
+                    welcome_message: 'Welcome VIP Guest!',
+                    special_requirements: 'Private lounge access'
+                  } : null
+                }
+              }
+              return detection
+            })
+            
+            setDetections(enhancedDetections)
+            
+            // Notify parent component if callback provided
+            if (onDetectionUpdate) {
+              onDetectionUpdate(enhancedDetections)
+            }
+          }
+        } catch (err) {
+          console.error('Error parsing recognition message:', err)
+        }
+      }
+
+      recognitionWs.onerror = (error) => {
+        if (!isMounted) return
+        console.error('Recognition WebSocket error:', error)
+      }
+
+      recognitionWs.onclose = (event) => {
+        if (!isMounted) return
+        console.log('Recognition WebSocket disconnected:', event.code, event.reason)
+        
+        // Try to reconnect after 5 seconds
+        if (isMounted) {
+          reconnectTimeout = setTimeout(() => {
+            console.log('Attempting to reconnect recognition WebSocket...')
+            connectRecognitionWebSocket()
+          }, 5000)
+        }
+      }
+    }
+
+    connectRecognitionWebSocket()
 
     return () => {
-      clearInterval(interval)
+      isMounted = false
+      
+      if (reconnectTimeout) clearTimeout(reconnectTimeout)
+      
+      if (recognitionWs && recognitionWs.readyState === WebSocket.OPEN) {
+        recognitionWs.close()
+      }
     }
   }, [camera, connected, onDetectionUpdate])
 
@@ -361,133 +454,323 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
           const scaledWidth = (right - left) * scale
           const scaledHeight = (bottom - top) * scale
 
+          // Determine color based on VIP status
+          const isVip = detection.is_vip || false
+          const strokeColor = isVip ? '#ff9900' : '#00ff00'  // Orange for VIP, green for regular
+          const fillColor = isVip ? '#ff9900' : '#00ff00'
+          
           // Draw face detection rectangle
-          ctx.strokeStyle = '#00ff00'
-          ctx.lineWidth = 2
+          ctx.strokeStyle = strokeColor
+          ctx.lineWidth = isVip ? 3 : 2  // Thicker border for VIP
           ctx.strokeRect(scaledLeft, scaledTop, scaledWidth, scaledHeight)
           
-          // Draw label
-          ctx.fillStyle = '#00ff00'
-          ctx.font = '14px Arial'
-          ctx.fillText(`Face (${Math.round(detection.confidence * 100)}%)`, scaledLeft, scaledTop - 5)
+          // Draw VIP crown icon if VIP
+          if (isVip) {
+            // Simple crown drawing
+            ctx.fillStyle = '#ffcc00'
+            ctx.beginPath()
+            ctx.moveTo(scaledLeft + scaledWidth / 2, scaledTop - 15)
+            ctx.lineTo(scaledLeft + scaledWidth / 2 - 10, scaledTop - 5)
+            ctx.lineTo(scaledLeft + scaledWidth / 2 - 5, scaledTop - 5)
+            ctx.lineTo(scaledLeft + scaledWidth / 2, scaledTop - 10)
+            ctx.lineTo(scaledLeft + scaledWidth / 2 + 5, scaledTop - 5)
+            ctx.lineTo(scaledLeft + scaledWidth / 2 + 10, scaledTop - 5)
+            ctx.closePath()
+            ctx.fill()
+          }
+          
+          // Draw label with attendee name if available
+          let labelText = `Face (${Math.round(detection.confidence * 100)}%)`
+          if (detection.attendee_name) {
+            labelText = `${detection.attendee_name} (${Math.round(detection.confidence * 100)}%)`
+          }
+          
+          if (isVip) {
+            labelText = `⭐ ${labelText} ⭐`
+          }
+          
+          ctx.fillStyle = fillColor
+          ctx.font = isVip ? 'bold 14px Arial' : '14px Arial'
+          ctx.fillText(labelText, scaledLeft, scaledTop - 10)
+          
+          // Draw additional VIP info if available
+          if (isVip && detection.vip_info) {
+            ctx.font = '12px Arial'
+            ctx.fillText(detection.vip_info.welcome_message || 'VIP Guest', scaledLeft, scaledTop - 30)
+          }
         }
         
         if (detection.type === 'qr_code') {
           // For QR codes, show a text indicator
-          ctx.fillStyle = '#ff0000'
+          ctx.fillStyle = '#007bff'
           ctx.font = '14px Arial'
-          ctx.fillText(`QR Code: ${detection.data}`, 10, 20)
+          ctx.fillText('QR Code Detected', xOffset + 10, yOffset + 20)
         }
       })
     }
 
-    // Set canvas dimensions to match video canvas
+    // Set overlay canvas dimensions to match video canvas
     overlayCanvas.width = videoCanvas.width
     overlayCanvas.height = videoCanvas.height
     
-    // Initial draw
     drawDetections()
-
-    // Redraw when detections update
-    const observer = new ResizeObserver(() => {
-      drawDetections()
-    })
-    observer.observe(videoCanvas)
-
-    return () => {
-      observer.disconnect()
-    }
   }, [detections])
 
-  if (loading) {
-    return <div className="loading">Loading camera stream...</div>
-  }
-
-  if (error) {
-    return (
-      <div className="error">
-        <p>Error: {error}</p>
-        <p>Camera: {camera?.name || 'Unknown'}</p>
-      </div>
-    )
-  }
-
-  if (!streamInfo) {
-    return (
-      <div className="no-stream">
-        <p>No camera stream available</p>
-        <p>Select a camera to view the live feed</p>
-      </div>
-    )
-  }
-
+  // Simple layout with video on left and detections on right
   return (
-    <div className="camera-view-container">
-      <div className="video-container" style={{ position: 'relative' }}>
-        <canvas
-          ref={videoRef}
-          style={{ 
-            width: '100%', 
-            maxWidth: '640px', 
-            height: 'auto', 
-            borderRadius: '8px',
-            backgroundColor: '#000'
-          }}
-        />
-        <canvas
-          ref={canvasRef}
-          className="detection-overlay"
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            pointerEvents: 'none'
-          }}
-        />
-        <div className="connection-status" style={{
-          position: 'absolute',
-          top: '10px',
-          right: '10px',
-          padding: '5px 10px',
-          borderRadius: '4px',
-          backgroundColor: connected ? 'rgba(0, 255, 0, 0.7)' : 'rgba(255, 0, 0, 0.7)',
-          color: 'white',
-          fontSize: '12px',
-          fontWeight: 'bold'
+    <div style={{ 
+      display: 'flex', 
+      flexDirection: 'row', 
+      gap: '20px', 
+      height: '100%',
+      minHeight: '500px'
+    }}>
+      {/* Video Stream */}
+      <div style={{ 
+        flex: 1, 
+        display: 'flex', 
+        flexDirection: 'column',
+        minHeight: '500px'
+      }}>
+        <div style={{ 
+          position: 'relative', 
+          flex: 1,
+          backgroundColor: '#000',
+          borderRadius: '8px',
+          overflow: 'hidden'
         }}>
-          {connected ? 'LIVE' : 'CONNECTING...'}
+          <canvas
+            ref={videoRef}
+            style={{ 
+              width: '100%',
+              height: '100%',
+              display: 'block'
+            }}
+          />
+          <canvas
+            ref={canvasRef}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              pointerEvents: 'none'
+            }}
+          />
+          <div style={{
+            position: 'absolute',
+            top: '10px',
+            right: '10px',
+            padding: '5px 10px',
+            borderRadius: '4px',
+            backgroundColor: connected ? 'rgba(0, 255, 0, 0.7)' : 'rgba(255, 0, 0, 0.7)',
+            color: 'white',
+            fontSize: '12px',
+            fontWeight: 'bold'
+          }}>
+            {connected ? 'LIVE' : 'CONNECTING...'}
+          </div>
+        </div>
+        
+        {/* Camera Info */}
+        <div style={{ 
+          marginTop: '10px', 
+          padding: '12px', 
+          backgroundColor: '#f8f9fa', 
+          borderRadius: '8px'
+        }}>
+          <h5 style={{ marginBottom: '8px', color: '#333', fontSize: '16px' }}>{camera?.name || 'Camera'}</h5>
+          <div style={{ 
+            display: 'flex', 
+            flexWrap: 'wrap',
+            justifyContent: 'space-between', 
+            gap: '10px',
+            fontSize: '14px' 
+          }}>
+            <div>
+              <strong>Status:</strong> <span style={{ color: connected ? '#28a745' : '#dc3545' }}>
+                {connected ? 'Connected' : 'Disconnected'}
+              </span>
+            </div>
+            <div>
+              <strong>Frames in queue:</strong> {frameQueueRef.current.length}
+            </div>
+            <div>
+              <strong>Stream:</strong> WebSocket
+            </div>
+          </div>
         </div>
       </div>
       
-      {/* Camera Information */}
-      <div className="camera-info" style={{ marginTop: '10px' }}>
-        <h5>{camera?.name || 'Camera'}</h5>
-        <p>Status: {connected ? 'Connected' : 'Disconnected'}</p>
-        <p>Stream: WebSocket ({frameQueueRef.current.length} frames in queue)</p>
-      </div>
-      
-      {/* Detection Information */}
-      <div className="detection-info" style={{ marginTop: '10px' }}>
-        <h5>Active Detections:</h5>
-        {detections.length > 0 ? (
-          <ul>
-            {detections.map((detection, index) => (
-              <li key={index}>
-                <strong>{detection.type.toUpperCase()}:</strong> 
-                {detection.type === 'face' && detection.attendee_id && (
-                  <span> Attendee ID: {detection.attendee_id} ({(detection.confidence * 100).toFixed(1)}% confidence)</span>
-                )}
-                {detection.type === 'qr_code' && (
-                  <span> Data: {detection.data}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p>No objects detected</p>
-        )}
+      {/* Active Detections */}
+      <div style={{ 
+        flex: 1, 
+        display: 'flex', 
+        flexDirection: 'column',
+        minHeight: '500px'
+      }}>
+        <div style={{ 
+          flex: 1,
+          padding: '15px', 
+          backgroundColor: '#f5f5f5', 
+          borderRadius: '8px',
+          overflowY: 'auto'
+        }}>
+          <div style={{ 
+            marginBottom: '15px', 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center'
+          }}>
+            <h5 style={{ margin: 0, color: '#333', fontSize: '18px' }}>Active Detections</h5>
+            <div style={{ 
+              padding: '4px 12px', 
+              backgroundColor: detections.length > 0 ? '#4caf50' : '#6c757d',
+              color: 'white',
+              borderRadius: '20px',
+              fontSize: '14px',
+              fontWeight: 'bold'
+            }}>
+              {detections.length} {detections.length === 1 ? 'Detection' : 'Detections'}
+            </div>
+          </div>
+          
+          {detections.length > 0 ? (
+            <div>
+              {detections.map((detection, index) => (
+                <div key={index} style={{ 
+                  marginBottom: '12px', 
+                  padding: '12px', 
+                  backgroundColor: detection.is_vip ? '#fff8e1' : '#fff',
+                  borderLeft: detection.is_vip ? '4px solid #ff9900' : '4px solid #4caf50',
+                  borderRadius: '6px',
+                  boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <strong style={{ 
+                        color: detection.is_vip ? '#ff9900' : '#4caf50',
+                        fontSize: '16px'
+                      }}>
+                        {detection.type.toUpperCase()}
+                      </strong>
+                      {detection.is_vip && (
+                        <span style={{ 
+                          padding: '2px 8px', 
+                          backgroundColor: '#ff9900',
+                          color: 'white',
+                          borderRadius: '12px',
+                          fontSize: '12px',
+                          fontWeight: 'bold'
+                        }}>
+                          ⭐ VIP
+                        </span>
+                      )}
+                    </div>
+                    {detection.confidence && (
+                      <span style={{ 
+                        padding: '4px 10px', 
+                        backgroundColor: detection.confidence > 0.8 ? '#4caf50' : detection.confidence > 0.6 ? '#ff9800' : '#f44336',
+                        color: 'white',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        fontWeight: 'bold'
+                      }}>
+                        {Math.round(detection.confidence * 100)}% confidence
+                      </span>
+                    )}
+                  </div>
+                  
+                  {detection.type === 'face' && (
+                    <div style={{ marginTop: '8px' }}>
+                      {detection.attendee_name && (
+                        <div style={{ marginBottom: '6px', fontSize: '15px' }}>
+                          <strong>Name:</strong> {detection.attendee_name}
+                        </div>
+                      )}
+                      {detection.company && (
+                        <div style={{ marginBottom: '4px', fontSize: '14px', color: '#555' }}>
+                          <strong>Company:</strong> {detection.company}
+                        </div>
+                      )}
+                      {detection.position && (
+                        <div style={{ marginBottom: '4px', fontSize: '14px', color: '#555' }}>
+                          <strong>Position:</strong> {detection.position}
+                        </div>
+                      )}
+                      {detection.attendee_id && (
+                        <div style={{ marginBottom: '4px', fontSize: '13px', color: '#777' }}>
+                          <strong>Attendee ID:</strong> {detection.attendee_id}
+                        </div>
+                      )}
+                      
+                      {detection.is_vip && (
+                        <div style={{ 
+                          marginTop: '10px', 
+                          padding: '10px', 
+                          backgroundColor: '#fff3cd', 
+                          borderRadius: '6px',
+                          border: '1px solid #ffeaa7'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', marginBottom: '6px' }}>
+                            <strong style={{ color: '#856404', fontSize: '15px' }}>VIP Status</strong>
+                            <span style={{ marginLeft: '8px', color: '#856404', fontSize: '14px' }}>
+                              ⭐ Priority Access Granted
+                            </span>
+                          </div>
+                          {detection.vip_info && (
+                            <div style={{ marginTop: '6px', fontSize: '14px', color: '#856404' }}>
+                              <div style={{ marginBottom: '4px' }}>
+                                <strong>Welcome:</strong> {detection.vip_info.welcome_message}
+                              </div>
+                              <div>
+                                <strong>Special Requirements:</strong> {detection.vip_info.special_requirements}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {detection.type === 'qr_code' && (
+                    <div style={{ marginTop: '8px' }}>
+                      <div style={{ fontSize: '15px' }}>
+                        <strong>QR Code Data:</strong>
+                      </div>
+                      <div style={{ 
+                        marginTop: '6px', 
+                        padding: '8px', 
+                        backgroundColor: '#f8f9fa', 
+                        borderRadius: '4px',
+                        fontFamily: 'monospace',
+                        fontSize: '13px',
+                        wordBreak: 'break-all'
+                      }}>
+                        {detection.data}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              justifyContent: 'center', 
+              alignItems: 'center', 
+              color: '#666',
+              textAlign: 'center',
+              height: '100%'
+            }}>
+              <div style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.5 }}>👁️</div>
+              <p style={{ fontSize: '18px', marginBottom: '8px' }}>No objects detected</p>
+              <p style={{ fontSize: '14px', color: '#888' }}>Waiting for face recognition...</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

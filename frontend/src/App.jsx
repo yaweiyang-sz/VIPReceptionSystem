@@ -19,13 +19,9 @@ function App() {
   const [error, setError] = useState(null)
   const [cameras, setCameras] = useState([])
   const [selectedCamera, setSelectedCamera] = useState(null)
-  const [activeTab, setActiveTab] = useState('dashboard') // dashboard, attendees, cameras
-  const [cameraStreamUrl, setCameraStreamUrl] = useState(null)
-  const [streamLoading, setStreamLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState('dashboard')
   const [recognitionActive, setRecognitionActive] = useState(false)
-  const [annotatedFrame, setAnnotatedFrame] = useState(null)
   const [detections, setDetections] = useState([])
-  const [websocket, setWebsocket] = useState(null)
 
   // Fetch system statistics
   const fetchSystemStats = async () => {
@@ -50,26 +46,9 @@ function App() {
     }
   }
 
-  // Fetch camera stream URL
-  const fetchCameraStream = async (cameraId) => {
-    if (!cameraId) return
-    
-    try {
-      setStreamLoading(true)
-      const response = await api.get(`/api/cameras/${cameraId}/stream`)
-      setCameraStreamUrl(response.data.stream_url)
-    } catch (err) {
-      console.error('Error fetching camera stream:', err)
-      setCameraStreamUrl(null)
-    } finally {
-      setStreamLoading(false)
-    }
-  }
-
   // Handle camera selection change
   const handleCameraChange = (cameraId) => {
     setSelectedCamera(cameraId)
-    fetchCameraStream(cameraId)
   }
 
   // Start real-time recognition
@@ -82,11 +61,8 @@ function App() {
     try {
       setLoading(true)
       setError(null)
-      
-      // Note: Real-time face recognition via WebSocket is not implemented
-      // This would require additional backend infrastructure for real-time processing
-      setError("Real-time face recognition is not available in this version. Use HLS video streaming instead.")
-      
+      setRecognitionActive(true)
+      // Note: Real-time recognition would be handled via WebSocket in LiveCameraView
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to start real-time recognition')
     } finally {
@@ -96,24 +72,8 @@ function App() {
 
   // Stop real-time recognition
   const stopRealTimeRecognition = async () => {
-    try {
-      if (websocket) {
-        websocket.close()
-        setWebsocket(null)
-      }
-      
-      if (selectedCamera) {
-        await api.post(`/api/recognition/stop-stream/${selectedCamera}`)
-      }
-      
-      setRecognitionActive(false)
-      setAnnotatedFrame(null)
-      setDetections([])
-      setRecognitionResult(null)
-      
-    } catch (err) {
-      console.error("Error stopping recognition:", err)
-    }
+    setRecognitionActive(false)
+    setRecognitionResult(null)
   }
 
   // Simulate face recognition
@@ -123,10 +83,8 @@ function App() {
     setRecognitionResult(null)
     
     try {
-      // This would normally capture an image from the camera
-      // For now, we'll simulate with a test image
       const response = await api.post('/api/recognition/auto', {
-        image_data: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=', // Placeholder base64
+        image_data: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=',
         camera_id: selectedCamera || 1
       })
       
@@ -146,7 +104,7 @@ function App() {
     
     try {
       const response = await api.post('/api/recognition/qr', {
-        image_data: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=', // Placeholder base64
+        image_data: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=',
         camera_id: selectedCamera || 1
       })
       
@@ -161,10 +119,6 @@ function App() {
   useEffect(() => {
     fetchSystemStats()
     fetchCameras()
-    
-    // Refresh stats every 30 seconds
-    const interval = setInterval(fetchSystemStats, 30000)
-    return () => clearInterval(interval)
   }, [])
 
   const renderContent = () => {
@@ -176,62 +130,17 @@ function App() {
       case 'dashboard':
       default:
         return (
-          <div className="main-content">
-            {/* System Statistics */}
-            {systemStats && (
-              <div className="stats-grid">
-                <div className="stat-card">
-                  <div className="stat-number">{systemStats.total_attendees}</div>
-                  <div className="stat-label">Total Attendees</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-number">{systemStats.vip_attendees}</div>
-                  <div className="stat-label">VIP Attendees</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-number">{systemStats.checked_in_attendees}</div>
-                  <div className="stat-label">Checked In</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-number">{systemStats.today_visits}</div>
-                  <div className="stat-label">Today's Visits</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-number">{systemStats.active_cameras}</div>
-                  <div className="stat-label">Active Cameras</div>
-                </div>
-              </div>
-            )}
-
-            {/* Recognition Section */}
-            <div className="recognition-section">
-              <h3>Visitor Recognition</h3>
+          <div style={{ padding: '20px', width: '100%', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            {/* Visitor Recognition Section - Full width */}
+            <div style={{ width: '100%' }}>
               
-              {/* Camera Selection */}
-              <div style={{ marginBottom: '1rem' }}>
-                <label htmlFor="camera-select" style={{ marginRight: '1rem' }}>Select Camera: </label>
-                <select 
-                  id="camera-select"
-                  value={selectedCamera || ''}
-                  onChange={(e) => handleCameraChange(parseInt(e.target.value))}
-                  style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
-                >
-                  {cameras.map(camera => (
-                    <option key={camera.id} value={camera.id}>
-                      {camera.name} - {camera.location}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Live Camera View with Overlay Detection */}
-              <div className="camera-feed">
+              {/* Live Camera View - Takes full width */}
+              <div style={{ width: '100%', marginBottom: '15px' }}>
                 <LiveCameraView 
                   camera={cameras.find(c => c.id === selectedCamera)}
                   api={api}
                   onDetectionUpdate={(detections) => {
                     setDetections(detections)
-                    // Update recognition result if attendee was recognized
                     const faceDetection = detections?.find(d => d.type === "face" && d.attendee_id)
                     if (faceDetection) {
                       setRecognitionResult({
@@ -245,107 +154,47 @@ function App() {
                 />
               </div>
 
-              {/* Recognition Controls */}
-              <div className="controls">
-                {!recognitionActive ? (
-                  <>
-                    <button 
-                      className="btn btn-primary" 
-                      onClick={startRealTimeRecognition}
-                      disabled={loading || !selectedCamera}
-                    >
-                      {loading ? 'Starting...' : 'Start Real-time Recognition'}
-                    </button>
-                    <button 
-                      className="btn btn-secondary" 
-                      onClick={simulateFaceRecognition}
-                      disabled={loading}
-                    >
-                      {loading ? 'Processing...' : 'Test Face Recognition'}
-                    </button>
-                    <button 
-                      className="btn btn-secondary" 
-                      onClick={simulateQRRecognition}
-                      disabled={loading}
-                    >
-                      {loading ? 'Processing...' : 'Test QR Code Scan'}
-                    </button>
-                  </>
-                ) : (
-                  <button 
-                    className="btn btn-danger" 
-                    onClick={stopRealTimeRecognition}
-                  >
-                    Stop Real-time Recognition
-                  </button>
-                )}
+              {/* Camera Selection - Below LiveCameraView */}
+              <div style={{ marginBottom: '15px' }}>
+                <label style={{ marginRight: '10px', fontWeight: 'bold' }}>Select Camera:</label>
+                <select 
+                  value={selectedCamera || ''}
+                  onChange={(e) => handleCameraChange(parseInt(e.target.value))}
+                  style={{ padding: '8px', width: '300px', borderRadius: '4px', border: '1px solid #ccc' }}
+                >
+                  {cameras.map(camera => (
+                    <option key={camera.id} value={camera.id}>
+                      {camera.name} - {camera.location}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               {/* Error Display */}
               {error && (
-                <div className="recognition-result error">
+                <div style={{ padding: '10px', background: '#f8d7da', color: '#721c24', borderRadius: '4px', marginBottom: '15px' }}>
                   <strong>Error:</strong> {error}
                 </div>
               )}
 
-              {/* Recognition Result */}
+              {/* Simple Recognition Result */}
               {recognitionResult && (
-                <div className={`recognition-result ${recognitionResult.success ? '' : 'error'}`}>
+                <div style={{ 
+                  padding: '15px', 
+                  background: recognitionResult.success ? '#d4edda' : '#f8d7da',
+                  color: recognitionResult.success ? '#155724' : '#721c24',
+                  borderRadius: '4px'
+                }}>
                   {recognitionResult.success ? (
-                    <div className="attendee-info">
-                      <div className="attendee-avatar">
-                        {(recognitionResult.attendee?.first_name?.[0] || 'U')}{(recognitionResult.attendee?.last_name?.[0] || 'K')}
-                      </div>
-                      <div className="attendee-details">
-                        <h4>
-                          {recognitionResult.attendee?.first_name || 'Unknown'} {recognitionResult.attendee?.last_name || 'User'}
-                          {recognitionResult.attendee?.is_vip && <span className="vip-badge">VIP</span>}
-                        </h4>
-                        <p><strong>Company:</strong> {recognitionResult.attendee?.company || 'Unknown'}</p>
-                        <p><strong>Position:</strong> {recognitionResult.attendee?.position || 'Unknown'}</p>
-                        <p><strong>Method:</strong> {recognitionResult.method} ({Math.round((recognitionResult.confidence || 0) * 100)}% confidence)</p>
-                      </div>
+                    <div>
+                      <strong>Recognized:</strong> Attendee #{recognitionResult.attendee?.id} 
+                      ({Math.round((recognitionResult.confidence || 0) * 100)}% confidence)
                     </div>
                   ) : (
-                    <p>{recognitionResult.message || 'Recognition failed'}</p>
+                    <div>{recognitionResult.message || 'Recognition failed'}</div>
                   )}
                 </div>
               )}
-            </div>
-
-            {/* System Information */}
-            <div className="dashboard">
-              <div className="card">
-                <h3>System Status</h3>
-                <p>Backend: <span style={{ color: '#28a745' }}>Connected</span></p>
-                <p>Database: <span style={{ color: '#28a745' }}>Healthy</span></p>
-                <p>Cameras: <span style={{ color: '#28a745' }}>{cameras.length} Active</span></p>
-              </div>
-
-              <div className="card">
-                <h3>Quick Actions</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  <button 
-                    className="btn btn-secondary" 
-                    onClick={() => setActiveTab('attendees')}
-                  >
-                    Manage Attendees
-                  </button>
-                  <button 
-                    className="btn btn-secondary" 
-                    onClick={() => setActiveTab('cameras')}
-                  >
-                    Camera Settings
-                  </button>
-                </div>
-              </div>
-
-              <div className="card">
-                <h3>Recent Activity</h3>
-                <p>System running normally</p>
-                <p>All services operational</p>
-                <p>Ready for visitor recognition</p>
-              </div>
             </div>
           </div>
         )
@@ -353,32 +202,82 @@ function App() {
   }
 
   return (
-    <div className="app">
-      <header className="header">
-        <h1>VIP Reception System</h1>
-        <p>Aviation Interior Exhibition - Visitor Recognition</p>
+    <div>
+      <header style={{ background: '#343a40', color: 'white', padding: '15px 20px', position: 'relative' }}>
+        {/* Left side: Title and subtitle */}
+        <div style={{ marginBottom: '15px' }}>
+          <h1 style={{ margin: 0 }}>VIP Reception System</h1>
+          <p style={{ margin: '5px 0 0 0', opacity: 0.8 }}>Aviation Interior Exhibition - Visitor Recognition</p>
+        </div>
         
-        {/* Navigation Tabs */}
-        <nav className="nav-tabs">
-          <button 
-            className={`nav-tab ${activeTab === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setActiveTab('dashboard')}
-          >
-            Dashboard
-          </button>
-          <button 
-            className={`nav-tab ${activeTab === 'attendees' ? 'active' : ''}`}
-            onClick={() => setActiveTab('attendees')}
-          >
-            Manage Attendees
-          </button>
-          <button 
-            className={`nav-tab ${activeTab === 'cameras' ? 'active' : ''}`}
-            onClick={() => setActiveTab('cameras')}
-          >
-            Camera Settings
-          </button>
-        </nav>
+        {/* Main header row: Navigation on left, Stats on right */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+          {/* Simple Navigation - Left side */}
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button 
+              onClick={() => setActiveTab('dashboard')}
+              style={{ 
+                padding: '8px 15px', 
+                background: activeTab === 'dashboard' ? '#007bff' : 'transparent',
+                color: activeTab === 'dashboard' ? 'white' : '#ccc',
+                border: '1px solid #ccc',
+                borderRadius: '4px'
+              }}
+            >
+              Dashboard
+            </button>
+            <button 
+              onClick={() => setActiveTab('attendees')}
+              style={{ 
+                padding: '8px 15px', 
+                background: activeTab === 'attendees' ? '#007bff' : 'transparent',
+                color: activeTab === 'attendees' ? 'white' : '#ccc',
+                border: '1px solid #ccc',
+                borderRadius: '4px'
+              }}
+            >
+              Manage Attendees
+            </button>
+            <button 
+              onClick={() => setActiveTab('cameras')}
+              style={{ 
+                padding: '8px 15px', 
+                background: activeTab === 'cameras' ? '#007bff' : 'transparent',
+                color: activeTab === 'cameras' ? 'white' : '#ccc',
+                border: '1px solid #ccc',
+                borderRadius: '4px'
+              }}
+            >
+              Camera Settings
+            </button>
+          </div>
+          
+          {/* System Statistics - Right side, aligned with navigation bottom */}
+          {systemStats && (
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+              <div style={{ textAlign: 'center', minWidth: '70px' }}>
+                <div style={{ fontSize: '18px', fontWeight: 'bold' }}>{systemStats.total_attendees}</div>
+                <div style={{ fontSize: '10px', opacity: 0.8 }}>Total</div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: '70px' }}>
+                <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#ff9900' }}>{systemStats.vip_attendees}</div>
+                <div style={{ fontSize: '10px', opacity: 0.8 }}>VIP</div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: '70px' }}>
+                <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#28a745' }}>{systemStats.checked_in_attendees}</div>
+                <div style={{ fontSize: '10px', opacity: 0.8 }}>Checked In</div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: '70px' }}>
+                <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#17a2b8' }}>{systemStats.today_visits}</div>
+                <div style={{ fontSize: '10px', opacity: 0.8 }}>Today</div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: '70px' }}>
+                <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#6f42c1' }}>{systemStats.active_cameras}</div>
+                <div style={{ fontSize: '10px', opacity: 0.8 }}>Cameras</div>
+              </div>
+            </div>
+          )}
+        </div>
       </header>
 
       {renderContent()}

@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 from typing import Optional, Dict, Any, List, Tuple
@@ -28,48 +29,79 @@ class FaceRecognitionEngine:
         self.encoding_times = []
         
         # Integration point for external recognition service
-        self.external_service_url = None  # Will be configured via environment variable
-        self.use_external_service = False
+        self.external_service_url = os.getenv("ALGORITHM_SERVICE_URL", None)  # Get from environment
+        self.use_external_service = self.external_service_url is not None
         
-        logger.info("FaceRecognitionEngine initialized - ready for integration with external service")
+        if self.use_external_service:
+            logger.info(f"FaceRecognitionEngine initialized with algorithm service: {self.external_service_url}")
+        else:
+            logger.info("FaceRecognitionEngine initialized - algorithm service not configured")
 
     def load_known_faces(self, db: Session = None) -> bool:
-        """Load known face encodings from database - placeholder for external service integration"""
+        """Load known face encodings from database for local fallback"""
         try:
             if not db:
                 logger.warning("No database session provided for loading known faces")
                 return False
             
-            # This is a placeholder implementation
-            # In production, this would sync with external recognition service
-            logger.info("Placeholder: Loading known faces from database for external service integration")
+            logger.info("Loading known faces from database for local recognition")
             
-            # For now, just mark cache as loaded
+            # Clear existing cache
+            self.known_face_encodings = []
+            self.known_face_ids = []
+            
+            # Load attendees with face encodings
+            attendees = db.query(Attendee).filter(
+                Attendee.face_encoding.isnot(None),
+                Attendee.status == "registered"
+            ).all()
+            
+            for attendee in attendees:
+                try:
+                    # Decode face encoding from base64
+                    encoding_data = base64.b64decode(attendee.face_encoding)
+                    encoding = pickle.loads(encoding_data)
+                    
+                    self.known_face_encodings.append(encoding)
+                    self.known_face_ids.append(attendee.id)
+                    
+                except Exception as e:
+                    logger.error(f"Error loading encoding for attendee {attendee.id}: {e}")
+            
             self.face_cache_loaded = True
-            self.face_cache_size = 0  # External service will handle the actual cache
+            self.face_cache_size = len(self.known_face_encodings)
             self.last_cache_update = time.time()
             
-            logger.info("Face cache ready for external service integration")
+            logger.info(f"Loaded {self.face_cache_size} face encodings from database for local recognition")
             return True
             
         except Exception as e:
             logger.error(f"Error loading known faces: {e}")
             return False
 
-    async def encode_face(self, image_data: bytes, max_faces: int = 1) -> Optional[List[Dict[str, Any]]]:
-        """Encode faces from image data - placeholder for external service integration"""
+    async def encode_face(self, image_data: bytes, max_faces: int = 1, attendee_id: Optional[int] = None, metadata: Optional[Dict] = None) -> Optional[List[Dict[str, Any]]]:
+        """Encode faces from image data using algorithm service"""
         try:
             start_time = time.time()
             logger.info(f"Starting face encoding for {len(image_data)} bytes of image data")
             
-            # Integration point for external service
+            # Integration point for algorithm service
             if self.use_external_service and self.external_service_url:
                 try:
-                    # Call external recognition service
+                    # Prepare request data
+                    files = {"image": image_data}
+                    data = {}
+                    if attendee_id is not None:
+                        data["attendee_id"] = str(attendee_id)
+                    if metadata is not None:
+                        data["metadata"] = json.dumps(metadata)
+                    
+                    # Call algorithm service
                     async with httpx.AsyncClient() as client:
                         response = await client.post(
-                            f"{self.external_service_url}/encode",
-                            files={"image": image_data},
+                            f"{self.external_service_url}/api/v1/encode",
+                            files=files,
+                            data=data,
                             timeout=30.0
                         )
                         
@@ -77,48 +109,84 @@ class FaceRecognitionEngine:
                             result = response.json()
                             encoding_time = time.time() - start_time
                             self.encoding_times.append(encoding_time)
-                            logger.info(f"External service encoded faces in {encoding_time:.3f}s")
-                            return result
+                            
+                            if result.get("success"):
+                                logger.info(f"Algorithm service encoded {result.get('num_faces', 0)} faces in {encoding_time:.3f}s")
+                                return result.get("encodings", [])
+                            else:
+                                logger.warning(f"Algorithm service encoding failed: {result.get('message', 'Unknown error')}")
+                                return None
+                        else:
+                            logger.error(f"Algorithm service returned error: {response.status_code}")
+                            return None
                 except Exception as e:
-                    logger.error(f"External service encoding failed: {e}")
+                    logger.error(f"Algorithm service encoding failed: {e}")
+                    # Fall back to local implementation
             
-            # Placeholder implementation for development/testing
-            logger.info("Using placeholder face encoding (no actual encoding performed)")
+            # Local implementation as fallback
+            logger.info("Using local face encoding (algorithm service not available)")
             
-            # Simulate encoding time
-            await asyncio.sleep(0.1)  # Simulate processing time
+            # Convert bytes to image
+            nparr = np.frombuffer(image_data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if img is None:
+                logger.error("Failed to decode image")
+                return None
+            
+            # Convert BGR to RGB
+            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            # Find all face locations
+            import face_recognition
+            face_locations = face_recognition.face_locations(rgb_img)
+            
+            if not face_locations:
+                logger.info("No faces found in image")
+                return []
+            
+            # Get face encodings
+            face_encodings = face_recognition.face_encodings(rgb_img, face_locations)
+            
+            results = []
+            for i, (encoding, location) in enumerate(zip(face_encodings, face_locations)):
+                # Convert encoding to base64 for storage
+                encoding_bytes = pickle.dumps(encoding)
+                encoding_b64 = base64.b64encode(encoding_bytes).decode('utf-8')
+                
+                results.append({
+                    'encoding': encoding_b64,
+                    'face_location': location,
+                    'face_index': i,
+                    'num_faces_found': len(face_locations)
+                })
             
             encoding_time = time.time() - start_time
             self.encoding_times.append(encoding_time)
+            logger.info(f"Local encoding completed for {len(results)} faces in {encoding_time:.3f}s")
             
-            # Return dummy result
-            return [{
-                'encoding': 'dummy_encoding_base64_string',
-                'face_location': (100, 200, 300, 400),
-                'face_index': 0,
-                'num_faces_found': 1
-            }]
+            return results
             
         except Exception as e:
             logger.error(f"Face encoding error: {str(e)}", exc_info=True)
             return None
 
     async def recognize_face(self, image: np.ndarray, db: Session = None) -> Optional[Dict[str, Any]]:
-        """Recognize faces in the given image - placeholder for external service integration"""
+        """Recognize faces in the given image using algorithm service"""
         try:
             start_time = time.time()
             
-            # Integration point for external service
+            # Integration point for algorithm service
             if self.use_external_service and self.external_service_url:
                 try:
                     # Convert image to bytes for HTTP request
                     _, buffer = cv2.imencode('.jpg', image)
                     image_bytes = buffer.tobytes()
                     
-                    # Call external recognition service
+                    # Call algorithm service
                     async with httpx.AsyncClient() as client:
                         response = await client.post(
-                            f"{self.external_service_url}/recognize",
+                            f"{self.external_service_url}/api/v1/recognize",
                             files={"image": image_bytes},
                             timeout=30.0
                         )
@@ -127,30 +195,104 @@ class FaceRecognitionEngine:
                             result = response.json()
                             recognition_time = time.time() - start_time
                             self.recognition_times.append(recognition_time)
-                            logger.info(f"External service recognized face in {recognition_time:.3f}s")
-                            return result
+                            
+                            if result.get("success") and result.get("recognition"):
+                                recognition_data = result["recognition"]
+                                logger.info(f"Algorithm service recognized VIP: {recognition_data.get('full_name', 'Unknown')} in {recognition_time:.3f}s")
+                                
+                                # Format the result to match expected structure
+                                return {
+                                    'attendee_id': recognition_data.get('attendee_id'),
+                                    'confidence': recognition_data.get('confidence', 0.0),
+                                    'face_location': recognition_data.get('face_location'),
+                                    'attendee_name': recognition_data.get('full_name', 'Unknown'),
+                                    'first_name': recognition_data.get('first_name', ''),
+                                    'last_name': recognition_data.get('last_name', ''),
+                                    'company': recognition_data.get('company', ''),
+                                    'position': recognition_data.get('position', ''),
+                                    'is_vip': recognition_data.get('is_vip', False),
+                                    'email': recognition_data.get('email', ''),
+                                    'phone': recognition_data.get('phone', ''),
+                                    'additional_info': recognition_data.get('additional_info', {})
+                                }
+                            else:
+                                logger.debug(f"No VIP recognized: {result.get('message', 'No match')}")
+                                return None
+                        else:
+                            logger.error(f"Algorithm service returned error: {response.status_code}")
+                            return None
                 except Exception as e:
-                    logger.error(f"External service recognition failed: {e}")
+                    logger.error(f"Algorithm service recognition failed: {e}")
+                    # Fall back to local implementation
             
-            # Placeholder implementation for development/testing
-            logger.debug("Using placeholder face recognition (no actual recognition performed)")
+            # Local implementation as fallback
+            logger.debug("Using local face recognition (algorithm service not available)")
             
-            # Simulate recognition time
-            await asyncio.sleep(0.05)  # Simulate processing time
+            # Convert BGR to RGB
+            rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
-            # Return dummy result (simulating recognition of a random attendee)
+            # Load known faces from database if needed
+            if not self.face_cache_loaded and db is not None:
+                self.load_known_faces(db)
+            
+            # If we have known faces, try local recognition
+            if self.face_cache_loaded and hasattr(self, 'known_face_encodings') and self.known_face_encodings:
+                import face_recognition
+                
+                # Find face locations
+                face_locations = face_recognition.face_locations(rgb_img)
+                
+                if face_locations:
+                    # Get face encodings
+                    face_encodings = face_recognition.face_encodings(rgb_img, face_locations)
+                    
+                    for i, face_encoding in enumerate(face_encodings):
+                        # Compare with known faces
+                        matches = face_recognition.compare_faces(
+                            self.known_face_encodings, 
+                            face_encoding,
+                            tolerance=self.confidence_threshold
+                        )
+                        
+                        if True in matches:
+                            # Get the best match
+                            face_distances = face_recognition.face_distance(
+                                self.known_face_encodings, 
+                                face_encoding
+                            )
+                            best_match_index = np.argmin(face_distances)
+                            best_distance = face_distances[best_match_index]
+                            confidence = 1.0 - min(best_distance, 1.0)
+                            
+                            if confidence >= 0.5:
+                                # Get attendee info from database
+                                attendee = db.query(Attendee).filter(Attendee.id == self.known_face_ids[best_match_index]).first()
+                                if attendee:
+                                    recognition_time = time.time() - start_time
+                                    self.recognition_times.append(recognition_time)
+                                    
+                                    return {
+                                        'attendee_id': attendee.id,
+                                        'confidence': float(confidence),
+                                        'face_location': face_locations[i],
+                                        'attendee_name': f"{attendee.first_name} {attendee.last_name}",
+                                        'first_name': attendee.first_name,
+                                        'last_name': attendee.last_name,
+                                        'company': attendee.company,
+                                        'position': attendee.position,
+                                        'is_vip': attendee.is_vip,
+                                        'email': attendee.email,
+                                        'phone': attendee.phone
+                                    }
+            
+            # Simulate recognition time for demo
+            await asyncio.sleep(0.05)
+            
             recognition_time = time.time() - start_time
             self.recognition_times.append(recognition_time)
             
-            # For demo purposes, return a dummy recognition result
-            return {
-                'attendee_id': 1,
-                'confidence': 0.85,
-                'face_location': (100, 200, 300, 400),
-                'attendee_name': 'Demo Attendee',
-                'company': 'Demo Company',
-                'is_vip': False
-            }
+            # Return None if no recognition
+            return None
             
         except Exception as e:
             logger.error(f"Face recognition error: {e}")
