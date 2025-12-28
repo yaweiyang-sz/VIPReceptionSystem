@@ -111,6 +111,41 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
               // Keep-alive response
               break
               
+            case 'recognition_update':
+              // Process recognition updates directly since we're receiving them
+              console.log(`Camera ${camera.id}: Processing recognition update:`, message)
+              if (message.camera_id === camera.id) {
+                console.log('Processing recognition update for camera:', camera.id, 'Detections:', message.detections)
+                const updatedDetections = message.detections || []
+                
+                // Enhance face detections with VIP information
+                const enhancedDetections = updatedDetections.map(detection => {
+                  console.log('Processing detection:', detection)
+                  if (detection.type === 'face' && detection.attendee_id) {
+                    const isVip = detection.is_vip !== undefined ? detection.is_vip : (detection.attendee_id % 3 === 0)
+                    
+                    return {
+                      ...detection,
+                      is_vip: isVip,
+                      vip_info: isVip ? {
+                        priority: 'High',
+                        welcome_message: `Welcome ${detection.attendee_name || 'VIP Guest'}!`,
+                        special_requirements: 'Private lounge access'
+                      } : null
+                    }
+                  }
+                  return detection
+                })
+                
+                console.log('Enhanced detections:', enhancedDetections)
+                setDetections(enhancedDetections)
+                
+                if (onDetectionUpdate) {
+                  onDetectionUpdate(enhancedDetections)
+                }
+              }
+              break
+              
             default:
               console.log(`Camera ${camera.id}: Unknown message type:`, message.type)
           }
@@ -317,7 +352,7 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
     let reconnectTimeout = null
 
     const connectRecognitionWebSocket = () => {
-      // Determine backend URL based on current host
+      // Determine backend URL based on current host (same logic as camera stream WebSocket)
       let backendHost
       if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         backendHost = `${window.location.hostname}:8000`
@@ -349,22 +384,26 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
         
         try {
           const message = JSON.parse(event.data)
+          // console.log('Recognition WebSocket message received:', message)
           
           if (message.type === 'recognition_update' && message.camera_id === camera.id) {
+            // console.log('Processing recognition update for camera:', camera.id, 'Detections:', message.detections)
             // Update detections with VIP information
             const updatedDetections = message.detections || []
             
             // Enhance face detections with VIP information
             const enhancedDetections = updatedDetections.map(detection => {
+              // console.log('Processing detection:', detection)
               if (detection.type === 'face' && detection.attendee_id) {
-                // This is where we would fetch additional VIP info
-                // For now, we'll add VIP flag based on attendee_id
+                // Use is_vip from backend if available, otherwise use example logic
+                const isVip = detection.is_vip !== undefined ? detection.is_vip : (detection.attendee_id % 3 === 0)
+                
                 return {
                   ...detection,
-                  is_vip: detection.attendee_id % 3 === 0, // Example: every 3rd attendee is VIP
-                  vip_info: detection.attendee_id % 3 === 0 ? {
+                  is_vip: isVip,
+                  vip_info: isVip ? {
                     priority: 'High',
-                    welcome_message: 'Welcome VIP Guest!',
+                    welcome_message: `Welcome ${detection.attendee_name || 'VIP Guest'}!`,
                     special_requirements: 'Private lounge access'
                   } : null
                 }
@@ -372,6 +411,7 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
               return detection
             })
             
+            // console.log('Enhanced detections:', enhancedDetections)
             setDetections(enhancedDetections)
             
             // Notify parent component if callback provided
@@ -380,7 +420,7 @@ const LiveCameraView = ({ camera, api, onDetectionUpdate }) => {
             }
           }
         } catch (err) {
-          console.error('Error parsing recognition message:', err)
+          console.error('Error parsing recognition message:', err, 'Raw data:', event.data)
         }
       }
 

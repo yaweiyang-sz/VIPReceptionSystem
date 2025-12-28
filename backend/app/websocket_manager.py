@@ -37,10 +37,13 @@ class ConnectionManager:
         disconnected = []
         message_json = json.dumps(message, default=str)
         
+        # print(f"DEBUG: Broadcasting message to {len(self.active_connections)} connections: {message.get('type', 'unknown')}")
+        
         for connection in self.active_connections:
             try:
                 await connection.send_text(message_json)
                 self.connection_data[connection]["last_activity"] = asyncio.get_event_loop().time()
+                # print(f"DEBUG: Successfully sent message to connection")
             except Exception as e:
                 print(f"Error broadcasting to connection: {e}")
                 disconnected.append(connection)

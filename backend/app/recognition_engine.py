@@ -565,12 +565,23 @@ class CameraStreamProcessor:
             
             # Add face detection info
             if face_result:
-                update_data["detections"].append({
+                face_detection = {
                     "type": "face",
                     "confidence": face_result.get('confidence', 0.0),
                     "attendee_id": face_result.get('attendee_id'),
-                    "location": face_result.get('face_location')
-                })
+                    "location": face_result.get('face_location'),
+                    "attendee_name": face_result.get('attendee_name'),
+                    "first_name": face_result.get('first_name', ''),
+                    "last_name": face_result.get('last_name', ''),
+                    "company": face_result.get('company', ''),
+                    "position": face_result.get('position', ''),
+                    "is_vip": face_result.get('is_vip', False),
+                    "email": face_result.get('email', ''),
+                    "phone": face_result.get('phone', '')
+                }
+                # Remove None values
+                face_detection = {k: v for k, v in face_detection.items() if v is not None}
+                update_data["detections"].append(face_detection)
             
             # Add QR code detection info
             if qr_result:

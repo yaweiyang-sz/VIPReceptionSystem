@@ -9,7 +9,7 @@ services:
       - CAMERA_SOURCES=0,http://localhost:8080/video
       - PYTHONUNBUFFERED=1  # For better Python logging in Docker
       - ALGORITHM_SERVICE_URL=http://algorithm:8001  # URL for algorithm service
-      - DUMMY_FACE_DETECTION=true  # Set to true to enable dummy face detection for testing
+      - DUMMY_FACE_DETECTION=false  # Set to true to enable dummy face detection for testing
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

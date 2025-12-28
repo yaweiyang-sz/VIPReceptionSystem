@@ -4,6 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import uvicorn
 import os
+import json
+import asyncio
 
 from app.database import engine, Base
 from app.websocket_manager import ConnectionManager
@@ -65,6 +67,58 @@ async def websocket_endpoint(websocket: WebSocket):
             await manager.send_personal_message(f"Message received: {data}", websocket)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@app.websocket("/api/ws/recognition")
+async def recognition_websocket(websocket: WebSocket):
+    """WebSocket endpoint for real-time recognition updates"""
+    print("DEBUG: Recognition WebSocket connection attempt")
+    await manager.connect(websocket)
+    try:
+        # Send initial connection confirmation
+        print("DEBUG: Recognition WebSocket connected, sending confirmation")
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "message": "Connected to recognition updates",
+            "timestamp": asyncio.get_event_loop().time()
+        }))
+        
+        while True:
+            try:
+                print("DEBUG: Recognition WebSocket waiting for message")
+                data = await websocket.receive_text()
+                print(f"DEBUG: Recognition WebSocket received: {data}")
+                message = json.loads(data)
+                
+                if message.get("type") == "ping":
+                    await websocket.send_text(json.dumps({
+                        "type": "pong",
+                        "timestamp": asyncio.get_event_loop().time()
+                    }))
+                elif message.get("type") == "subscribe":
+                    # Client wants to subscribe to a specific camera's recognition updates
+                    camera_id = message.get("camera_id")
+                    # Store subscription info (simplified - in production you'd want to track subscriptions per connection)
+                    await websocket.send_text(json.dumps({
+                        "type": "subscribed",
+                        "camera_id": camera_id,
+                        "message": f"Subscribed to recognition updates for camera {camera_id}"
+                    }))
+                    
+            except WebSocketDisconnect:
+                print("DEBUG: Recognition WebSocket disconnect exception")
+                break
+            except Exception as e:
+                print(f"Recognition WebSocket error: {e}")
+                # Continue the loop to keep connection alive
+                await asyncio.sleep(0.1)
+                
+    except WebSocketDisconnect:
+        print("Recognition WebSocket disconnected")
+    except Exception as e:
+        print(f"Recognition WebSocket connection error: {e}")
+    finally:
+        manager.disconnect(websocket)
+        print("Recognition WebSocket connection closed")
 
 if __name__ == "__main__":
     uvicorn.run(

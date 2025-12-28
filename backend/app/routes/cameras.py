@@ -252,7 +252,7 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                 
                 # Perform face recognition on the captured frame (every 20 frames for performance)
                 # Use a separate task to avoid blocking the frame processing
-                recognition_interval = 20
+                recognition_interval = 40
                 if frame_count % recognition_interval == 0:
                     # Create a copy of the frame for async processing to avoid frame modification issues
                     frame_copy = frame.copy() if hasattr(frame, 'copy') else frame
