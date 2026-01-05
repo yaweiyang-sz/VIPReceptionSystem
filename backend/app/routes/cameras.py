@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional, Dict, Any
 import json
 import asyncio
 import cv2
 import base64
 import numpy as np
 import os
+from datetime import datetime
 
 from app.database import get_db, Camera, SessionLocal
 from app.schemas import CameraCreate, CameraResponse
@@ -18,6 +19,98 @@ DUMMY_FACE_DETECTION = os.getenv("DUMMY_FACE_DETECTION", "false").lower() == "tr
 print(f"DEBUG: DUMMY_FACE_DETECTION environment variable is set to: {DUMMY_FACE_DETECTION}")
 
 router = APIRouter()
+
+# FIXED: Camera stream manager to handle single recognition pipeline per camera
+class CameraStreamManager:
+    """Manages camera streams with single recognition pipeline per camera"""
+    
+    def __init__(self):
+        self.active_cameras = {}  # camera_id -> stream_context
+        self.recognition_locks = {}  # camera_id -> asyncio.Lock for recognition serialization
+    
+    def is_camera_active(self, camera_id: int) -> bool:
+        """Check if camera is currently streaming"""
+        return camera_id in self.active_cameras
+    
+    def register_camera(self, camera_id: int):
+        """Register a new camera stream"""
+        if camera_id not in self.active_cameras:
+            self.active_cameras[camera_id] = {
+                'frame_count': 0,
+                'last_recognition_frame': -1,
+                'recognition_in_progress': False,
+                'last_recognition_result': None,
+                'last_recognition_time': 0,
+                'created_at': datetime.now()
+            }
+            self.recognition_locks[camera_id] = asyncio.Lock()
+            print(f"Registered camera {camera_id} for streaming")
+    
+    def unregister_camera(self, camera_id: int):
+        """Unregister camera stream"""
+        if camera_id in self.active_cameras:
+            del self.active_cameras[camera_id]
+        if camera_id in self.recognition_locks:
+            del self.recognition_locks[camera_id]
+        print(f"Unregistered camera {camera_id}")
+    
+    def get_frame_count(self, camera_id: int) -> int:
+        """Get current frame count for camera"""
+        if camera_id in self.active_cameras:
+            return self.active_cameras[camera_id]['frame_count']
+        return 0
+    
+    def increment_frame_count(self, camera_id: int):
+        """Increment frame count"""
+        if camera_id in self.active_cameras:
+            self.active_cameras[camera_id]['frame_count'] += 1
+    
+    def should_run_recognition(self, camera_id: int, recognition_interval: int = 30) -> bool:
+        """Determine if recognition should run for this frame"""
+        if camera_id not in self.active_cameras:
+            return False
+        
+        context = self.active_cameras[camera_id]
+        frame_count = context['frame_count']
+        
+        # Don't run if recognition is already in progress
+        if context['recognition_in_progress']:
+            return False
+        
+        # Run recognition at intervals
+        frames_since_last = frame_count - context['last_recognition_frame']
+        return frames_since_last >= recognition_interval
+    
+    def mark_recognition_start(self, camera_id: int):
+        """Mark that recognition has started"""
+        if camera_id in self.active_cameras:
+            context = self.active_cameras[camera_id]
+            context['recognition_in_progress'] = True
+            context['last_recognition_frame'] = context['frame_count']
+    
+    def mark_recognition_complete(self, camera_id: int, result: Optional[Dict]):
+        """Mark that recognition has completed"""
+        if camera_id in self.active_cameras:
+            context = self.active_cameras[camera_id]
+            context['recognition_in_progress'] = False
+            context['last_recognition_result'] = result
+            context['last_recognition_time'] = datetime.now().timestamp()
+    
+    def get_last_recognition_result(self, camera_id: int) -> Optional[Dict]:
+        """Get the last recognition result (for overlay)"""
+        if camera_id in self.active_cameras:
+            return self.active_cameras[camera_id]['last_recognition_result']
+        return None
+    
+    async def get_recognition_lock(self, camera_id: int) -> asyncio.Lock:
+        """Get the recognition lock for a camera"""
+        if camera_id not in self.recognition_locks:
+            self.recognition_locks[camera_id] = asyncio.Lock()
+        return self.recognition_locks[camera_id]
+
+# Global camera stream manager
+stream_manager = CameraStreamManager()
+
 
 @router.get("/", response_model=List[CameraResponse])
 async def list_cameras(db: Session = Depends(get_db)):
@@ -90,26 +183,23 @@ async def get_camera_stream(camera_id: int, db: Session = Depends(get_db)):
 
 @router.websocket("/{camera_id}/ws/stream")
 async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
-    """WebSocket endpoint for real-time camera stream"""
+    """WebSocket endpoint for real-time camera stream with SINGLE recognition pipeline"""
     print(f"DEBUG: WebSocket connection started for camera {camera_id}")
-    
-    # Debug: Check what SessionLocal is
-    print(f"DEBUG: SessionLocal type: {type(SessionLocal)}")
-    print(f"DEBUG: SessionLocal(): {SessionLocal}")
-    print(f"DEBUG: SessionLocal() type: {type(SessionLocal())}")
     
     await manager.connect(websocket)
     
     # Create database session
     db = SessionLocal()
-    print(f"DEBUG: db type: {type(db)}")
-    print(f"DEBUG: db has query attribute: {hasattr(db, 'query')}")
     
     # Initialize variables for finally block
     test_mode = False
     cap = None
+    recognition_task = None
     
     try:
+        # Register camera with stream manager
+        stream_manager.register_camera(camera_id)
+        
         # Get camera details
         camera = db.query(Camera).filter(Camera.id == camera_id).first()
         if not camera:
@@ -132,27 +222,22 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
             "source": camera.source
         }))
         
-        # For testing: If source is "0", use default camera (webcam)
-        # If source is a test URL, generate test frames
+        # Initialize video capture
         source = camera.source
         
         # Check if it's a test source
         if source == "0" or source.lower() == "test":
-            # Use default camera (usually webcam)
             print(f"DEBUG: Using webcam (source=0) for camera {camera_id}")
             cap = cv2.VideoCapture(0)
             test_mode = False
         elif source.startswith("test://"):
-            # Test mode with generated frames
             print(f"DEBUG: Using test mode for camera {camera_id}")
             cap = None
             test_mode = True
             test_pattern = source.replace("test://", "")
         else:
             # Real camera stream (RTSP, HTTP, etc.)
-            # For RTSP streams, use TCP transport for better reliability
             if source.startswith("rtsp://"):
-                # Add RTSP transport parameters
                 source_with_params = f"{source}?rtsp_transport=tcp"
                 print(f"DEBUG: Opening RTSP stream: {source_with_params}")
                 cap = cv2.VideoCapture(source_with_params)
@@ -170,7 +255,6 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                     "type": "error",
                     "message": f"Failed to open camera stream: {source}"
                 }))
-                # Try fallback to test mode
                 cap = None
                 test_mode = True
                 test_pattern = "fallback"
@@ -187,79 +271,56 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
         }))
         print(f"DEBUG: Sent stream info, test_mode={test_mode}")
         
-        frame_count = 0
         last_ping_time = asyncio.get_event_loop().time()
         
         # Frame timing control
         target_fps = camera.fps if camera.fps and camera.fps > 0 else 15
         frame_interval = 1.0 / target_fps
-        last_frame_time = asyncio.get_event_loop().time()
         
-        while True:
-            try:
-                frame_start_time = asyncio.get_event_loop().time()
-                
-                # Check for client messages (ping/pong)
+        # FIXED: Recognition configuration
+        recognition_interval = 30  # Process recognition every 30 frames (2 seconds at 15fps)
+        
+        # FIXED: Single recognition worker task
+        async def recognition_worker():
+            """Single worker task for face recognition - processes frames sequentially"""
+            print(f"DEBUG: Recognition worker started for camera {camera_id}")
+            
+            while stream_manager.is_camera_active(camera_id):
                 try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)  # Reduced timeout
-                    message = json.loads(data)
+                    # Wait a bit before checking for new work
+                    await asyncio.sleep(0.1)
                     
-                    if message.get("type") == "ping":
-                        await websocket.send_text(json.dumps({
-                            "type": "pong",
-                            "timestamp": asyncio.get_event_loop().time()
-                        }))
-                        last_ping_time = asyncio.get_event_loop().time()
+                    # Check if we should run recognition
+                    if not stream_manager.should_run_recognition(camera_id, recognition_interval):
+                        continue
+                    
+                    # Get lock to ensure single recognition at a time
+                    lock = await stream_manager.get_recognition_lock(camera_id)
+                    async with lock:
+                        stream_manager.mark_recognition_start(camera_id)
                         
-                except asyncio.TimeoutError:
-                    # No message received, continue with frame processing
-                    pass
-                
-                # Generate or capture frame
-                if test_mode:
-                    # Generate test frame
-                    frame = generate_test_frame(frame_count, test_pattern if 'test_pattern' in locals() else "default")
-                    ret = True
-                else:
-                    # Read frame from camera
-                    ret, frame = cap.read()
-                    if not ret:
-                        # Try to reopen the stream
-                        print(f"Failed to read frame from camera {camera_id}, attempting to reopen...")
-                        cap.release()
-                        await asyncio.sleep(1)
-                        if source.startswith("rtsp://"):
-                            source_with_params = f"{source}?rtsp_transport=tcp"
-                            cap = cv2.VideoCapture(source_with_params)
-                        else:
-                            cap = cv2.VideoCapture(source)
+                        # Get current frame info
+                        current_frame_count = stream_manager.get_frame_count(camera_id)
                         
-                        if not cap.isOpened():
-                            await websocket.send_text(json.dumps({
-                                "type": "error",
-                                "message": "Camera stream disconnected"
-                            }))
-                            # Switch to test mode
-                            cap = None
-                            test_mode = True
-                            test_pattern = "reconnect_fallback"
-                            continue
-                        else:
-                            # Try reading again
-                            ret, frame = cap.read()
-                            if not ret:
+                        print(f"DEBUG: Starting recognition for camera {camera_id}, frame {current_frame_count}")
+                        
+                        # Read a fresh frame for recognition
+                        recognition_frame = None
+                        if test_mode:
+                            recognition_frame = generate_test_frame(current_frame_count, 
+                                                                   test_pattern if 'test_pattern' in locals() else "default")
+                        elif cap is not None and cap.isOpened():
+                            ret, recognition_frame = cap.read()
+                            if not ret or recognition_frame is None:
+                                print(f"DEBUG: Failed to read frame for recognition on camera {camera_id}")
+                                stream_manager.mark_recognition_complete(camera_id, None)
                                 continue
-                
-                # Perform face recognition on the captured frame (every 20 frames for performance)
-                # Use a separate task to avoid blocking the frame processing
-                recognition_interval = 40
-                if frame_count % recognition_interval == 0:
-                    # Create a copy of the frame for async processing to avoid frame modification issues
-                    frame_copy = frame.copy() if hasattr(frame, 'copy') else frame
-                    
-                    # Run recognition asynchronously without waiting for completion
-                    # This prevents blocking the frame streaming
-                    async def process_recognition_async(frame_to_process, db_session, current_frame_count):
+                        
+                        if recognition_frame is None:
+                            stream_manager.mark_recognition_complete(camera_id, None)
+                            continue
+                        
+                        # FIXED: Single recognition call with proper error handling
                         try:
                             # Check if dummy face detection is enabled
                             if DUMMY_FACE_DETECTION and current_frame_count % 100 == 0:
@@ -267,7 +328,7 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                                 dummy_result = {
                                     'attendee_id': 999,
                                     'confidence': 0.85,
-                                    'face_location': (100, 300, 200, 200),  # top, right, bottom, left
+                                    'face_location': (100, 300, 200, 200),
                                     'attendee_name': 'John Doe (Test)',
                                     'first_name': 'John',
                                     'last_name': 'Doe',
@@ -278,53 +339,22 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                                     'phone': '+1-555-123-4567'
                                 }
                                 print(f"DEBUG: DUMMY Face recognized in frame {current_frame_count}: {dummy_result['attendee_name']} with confidence {dummy_result['confidence']:.2f}")
-                                
-                                # Send recognition update via WebSocket manager (for recognition WebSocket)
-                                update_data = {
-                                    "type": "recognition_update",
-                                    "camera_id": camera_id,
-                                    "timestamp": asyncio.get_event_loop().time(),
-                                    "frame_width": frame_to_process.shape[1],
-                                    "frame_height": frame_to_process.shape[0],
-                                    "detections": [{
-                                        "type": "face",
-                                        "confidence": dummy_result['confidence'],
-                                        "attendee_id": dummy_result['attendee_id'],
-                                        "attendee_name": dummy_result['attendee_name'],
-                                        "location": dummy_result['face_location'],
-                                        "is_vip": dummy_result['is_vip'],
-                                        "company": dummy_result['company'],
-                                        "position": dummy_result['position']
-                                    }]
-                                }
-                                await manager.broadcast(update_data)
-                                
-                                # Also send to camera stream WebSocket for immediate feedback
-                                try:
-                                    await websocket.send_text(json.dumps({
-                                        "type": "recognition",
-                                        "camera_id": camera_id,
-                                        "frame_id": current_frame_count,
-                                        "timestamp": asyncio.get_event_loop().time(),
-                                        "result": dummy_result
-                                    }))
-                                except Exception as ws_error:
-                                    print(f"DEBUG: Failed to send recognition result via camera WebSocket: {ws_error}")
-                                
-                                return
+                                recognition_result = dummy_result
+                            else:
+                                # Normal face recognition
+                                recognition_result = await face_recognition_engine.recognize_face(recognition_frame, db)
                             
-                            # Normal face recognition
-                            recognition_result = await face_recognition_engine.recognize_face(frame_to_process, db_session)
                             if recognition_result:
                                 print(f"DEBUG: Face recognized in frame {current_frame_count}: {recognition_result.get('attendee_name', 'Unknown')} with confidence {recognition_result.get('confidence', 0.0):.2f}")
                                 
-                                # Send recognition update via WebSocket manager (for recognition WebSocket)
+                                # Send recognition update via WebSocket manager
                                 update_data = {
                                     "type": "recognition_update",
                                     "camera_id": camera_id,
                                     "timestamp": asyncio.get_event_loop().time(),
-                                    "frame_width": frame_to_process.shape[1],
-                                    "frame_height": frame_to_process.shape[0],
+                                    "frame_number": current_frame_count,
+                                    "frame_width": recognition_frame.shape[1],
+                                    "frame_height": recognition_frame.shape[0],
                                     "detections": [{
                                         "type": "face",
                                         "confidence": recognition_result.get('confidence', 0.0),
@@ -338,7 +368,7 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                                 }
                                 await manager.broadcast(update_data)
                                 
-                                # Also send to camera stream WebSocket for immediate feedback
+                                # Also send to camera stream WebSocket
                                 try:
                                     await websocket.send_text(json.dumps({
                                         "type": "recognition",
@@ -348,24 +378,91 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                                         "result": recognition_result
                                     }))
                                 except Exception as ws_error:
-                                    print(f"DEBUG: Failed to send recognition result via camera WebSocket: {ws_error}")
+                                    print(f"DEBUG: Failed to send recognition result via WebSocket: {ws_error}")
                             else:
                                 print(f"DEBUG: No face recognized in frame {current_frame_count}")
+                            
+                            # Store result for overlay
+                            stream_manager.mark_recognition_complete(camera_id, recognition_result)
+                            
                         except Exception as e:
-                            print(f"DEBUG: Face recognition error in frame {current_frame_count}: {e}")
+                            print(f"ERROR: Face recognition error in frame {current_frame_count}: {e}")
+                            stream_manager.mark_recognition_complete(camera_id, None)
+                
+                except asyncio.CancelledError:
+                    print(f"DEBUG: Recognition worker cancelled for camera {camera_id}")
+                    break
+                except Exception as e:
+                    print(f"ERROR: Recognition worker error for camera {camera_id}: {e}")
+                    await asyncio.sleep(1)
+            
+            print(f"DEBUG: Recognition worker stopped for camera {camera_id}")
+        
+        # Start the recognition worker task
+        recognition_task = asyncio.create_task(recognition_worker())
+        
+        # Main frame streaming loop
+        while True:
+            try:
+                frame_start_time = asyncio.get_event_loop().time()
+                
+                # Check for client messages (ping/pong)
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
+                    message = json.loads(data)
                     
-                    # Start the recognition task without waiting for it to complete
-                    asyncio.create_task(process_recognition_async(frame_copy, db, frame_count))
+                    if message.get("type") == "ping":
+                        await websocket.send_text(json.dumps({
+                            "type": "pong",
+                            "timestamp": asyncio.get_event_loop().time()
+                        }))
+                        last_ping_time = asyncio.get_event_loop().time()
+                        
+                except asyncio.TimeoutError:
+                    pass
+                
+                # Generate or capture frame
+                if test_mode:
+                    frame = generate_test_frame(stream_manager.get_frame_count(camera_id), 
+                                              test_pattern if 'test_pattern' in locals() else "default")
+                    ret = True
+                else:
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        print(f"Failed to read frame from camera {camera_id}, attempting to reopen...")
+                        if cap:
+                            cap.release()
+                        await asyncio.sleep(1)
+                        
+                        if source.startswith("rtsp://"):
+                            source_with_params = f"{source}?rtsp_transport=tcp"
+                            cap = cv2.VideoCapture(source_with_params)
+                        else:
+                            cap = cv2.VideoCapture(source)
+                        
+                        if not cap.isOpened():
+                            await websocket.send_text(json.dumps({
+                                "type": "error",
+                                "message": "Camera stream disconnected"
+                            }))
+                            cap = None
+                            test_mode = True
+                            test_pattern = "reconnect_fallback"
+                            continue
+                        else:
+                            ret, frame = cap.read()
+                            if not ret:
+                                continue
                 
                 # Increment frame count
-                frame_count += 1
-
+                stream_manager.increment_frame_count(camera_id)
+                current_frame_count = stream_manager.get_frame_count(camera_id)
+                
                 # Get original frame dimensions
                 original_height, original_width = frame.shape[:2]
                 
                 # Calculate target dimensions maintaining aspect ratio
-                # Target max dimension 640px for better quality but reasonable bandwidth
-                max_dimension = 640
+                max_dimension = 800  # Increased for better recognition quality
                 if original_width > original_height:
                     target_width = max_dimension
                     target_height = int(original_height * (max_dimension / original_width))
@@ -373,24 +470,23 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                     target_height = max_dimension
                     target_width = int(original_width * (max_dimension / original_height))
                 
-                # Ensure even dimensions (helps with some codecs)
+                # Ensure even dimensions
                 target_width = target_width - (target_width % 2)
                 target_height = target_height - (target_height % 2)
                 
-                # Resize frame for optimal bandwidth/quality balance
+                # Resize frame
                 frame = cv2.resize(frame, (target_width, target_height))
                 
-                # Encode frame as JPEG with adaptive quality
-                # Higher quality for smaller images, lower for larger
-                jpeg_quality = max(50, 90 - (target_width * target_height) // 5000)
+                # Encode frame as JPEG with better quality
+                jpeg_quality = max(75, 95 - (target_width * target_height) // 10000)
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
                 frame_data = base64.b64encode(buffer).decode('utf-8')
                 
                 # Send frame via WebSocket
                 await websocket.send_text(json.dumps({
                     "type": "frame",
-                    "camera_id": camera_id,  # Add camera_id for filtering
-                    "frame_id": frame_count,
+                    "camera_id": camera_id,
+                    "frame_id": current_frame_count,
                     "timestamp": asyncio.get_event_loop().time(),
                     "data": frame_data,
                     "width": target_width,
@@ -400,13 +496,10 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
                     "test_mode": test_mode
                 }))
                 
-                # Calculate dynamic sleep time based on target FPS
+                # Calculate dynamic sleep time
                 processing_end = asyncio.get_event_loop().time()
                 processing_time = processing_end - frame_start_time
                 sleep_time = max(0.001, frame_interval - processing_time)
-                
-                # Update last frame time
-                last_frame_time = processing_end
                 
                 await asyncio.sleep(sleep_time)
                 
@@ -421,11 +514,27 @@ async def camera_stream_websocket(websocket: WebSocket, camera_id: int):
     except Exception as e:
         print(f"WebSocket connection error for camera {camera_id}: {e}")
     finally:
-        # Clean up
+        # Clean up recognition task
+        if recognition_task and not recognition_task.done():
+            recognition_task.cancel()
+            try:
+                await recognition_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Unregister camera
+        stream_manager.unregister_camera(camera_id)
+        
+        # Clean up capture
         if not test_mode and cap is not None:
             cap.release()
+        
+        # Close database
         db.close()
+        
+        # Disconnect websocket
         manager.disconnect(websocket)
+        
         print(f"Camera stream WebSocket closed for camera {camera_id}")
 
 def generate_test_frame(frame_count: int, pattern: str = "default") -> np.ndarray:
@@ -453,7 +562,7 @@ def generate_test_frame(frame_count: int, pattern: str = "default") -> np.ndarra
         center_x = 320 + int(200 * np.sin(frame_count * 0.1))
         center_y = 240 + int(150 * np.cos(frame_count * 0.07))
         
-        # Create gradient background using numpy vectorized operations (much faster)
+        # Create gradient background using numpy vectorized operations
         x = np.arange(640)
         y = np.arange(480)
         X, Y = np.meshgrid(x, y)
